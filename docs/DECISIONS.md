@@ -1161,7 +1161,8 @@ The documentation did not name these items; they are fixed here so implementatio
 10. **Offline detection:** the connected peer is health-checked every few seconds; after three misses it is marked offline, a running upload is aborted, and the transfer is failed. When the peer answers again it is restored without a new handshake. Address changes are picked up from discovery.
 11. **Requests while idle:** the IPC layer runs requests on a small worker pool so a slow `devices.connect` never blocks status polling.
 12. **Abuse limits:** replayed nonces, bad signatures, invalid manifests and oversized or stalled uploads are rejected, audited, and rate limited per address/device.
-13. **Data directory:** Tauri passes its app-data directory to the backend, so uninstall removes exactly HandOff data (ADR-043). An AppImage has no uninstaller, so on Linux data removal is a documented manual step.
+13. **Data directory:** the core resolves the OS app-data directory itself (`%APPDATA%\HandOff`, `~/.local/share/HandOff`); Tauri passes nothing in release builds. The Windows uninstaller hook removes exactly that folder (ADR-043). An AppImage has no uninstaller, so on Linux data removal is a documented manual step (`rm -rf ~/.local/share/HandOff`).
+14. **Sidecar packaging:** the core is a PyInstaller onedir bundle shipped as a Tauri *resource* (`handoff-core/`), not `externalBin`, because `externalBin` carries a single file and cannot hold a onedir bundle. Release builds launch it with no environment overrides; the debug-only `HANDOFF_*` overrides are compiled out.
 
 ### Rationale
 

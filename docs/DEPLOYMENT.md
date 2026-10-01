@@ -785,3 +785,28 @@ Linux x64
 ```
 
 No cloud infrastructure or external server is required.
+
+---
+
+# 37. Building (Phase 1)
+
+Requirements: `uv`, Node 20 + pnpm 9, Rust (stable), and on Linux `webkit2gtk-4.1` and `libfuse2`. The build downloads
+`linuxdeploy` once (needs Internet at *build* time only; the installed app needs none).
+
+Build on the target OS: PyInstaller does not cross-compile, so the Windows installer must be built on Windows.
+
+```text
+./scripts/build-sidecar.sh          # backend -> app/src-tauri/binaries/handoff-core/ (PyInstaller onedir)
+cd app && pnpm install
+pnpm tauri build --bundles appimage # Linux: HandOff_<version>_amd64.AppImage
+pnpm tauri build --bundles nsis     # Windows: NSIS installer (per-user install)
+```
+
+On Windows run the same steps (the script is bash; use Git Bash, or run the `pyinstaller` command in it by hand).
+
+- Release builds start only the bundled core. Debug builds run the core from source and honour `HANDOFF_DATA_DIR`,
+  `HANDOFF_PORT` and `HANDOFF_BIND` for two-instance testing; those overrides are compiled out of release builds.
+- The bundle contains no keys, database or `.env`. Each install generates its own identity on first run (§21).
+- Uninstall: the NSIS hook asks, then removes only `%APPDATA%\HandOff`. An AppImage has no uninstaller; remove
+  `~/.local/share/HandOff` by hand.
+- Verified on Linux x64 only. The Windows installer config exists but has not been built or run.

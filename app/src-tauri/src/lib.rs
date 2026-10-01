@@ -21,7 +21,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
-            let sidecar = Sidecar::spawn().map_err(|e| e.to_string())?;
+            let sidecar = Sidecar::spawn(app.path().resource_dir().ok()).map_err(|e| e.to_string())?;
             app.manage(Core(Arc::new(sidecar)));
             Ok(())
         })

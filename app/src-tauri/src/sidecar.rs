@@ -7,6 +7,7 @@
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
+use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
@@ -25,8 +26,8 @@ pub struct Sidecar {
 }
 
 impl Sidecar {
-    pub fn spawn() -> Result<Self, String> {
-        let mut cmd = build_command();
+    pub fn spawn(resource_dir: Option<PathBuf>) -> Result<Self, String> {
+        let mut cmd = build_command(resource_dir)?;
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
         let mut child = cmd.spawn().map_err(|e| format!("could not start the HandOff core: {e}"))?;
         let stdin = child.stdin.take().ok_or("core stdin unavailable")?;
@@ -110,9 +111,12 @@ fn unavailable() -> Value {
     json!({"code": "CORE_UNAVAILABLE", "message": "The HandOff core is not running."})
 }
 
-/// Dev: `uv run python -m handoff` from the repo's backend/. Two instances on one machine
-/// use HANDOFF_DATA_DIR / HANDOFF_PORT. The packaged sidecar replaces this in M4.
-fn build_command() -> Command {
+/// Debug builds run the core from source (`uv run python -m handoff`); two instances on one
+/// machine use HANDOFF_DATA_DIR / HANDOFF_PORT / HANDOFF_BIND. Release builds run only the
+/// bundled core, with no environment overrides and no data-dir argument: the core uses the
+/// OS app-data directory (DEPLOYMENT §12, §19).
+#[cfg(debug_assertions)]
+fn build_command(_resource_dir: Option<PathBuf>) -> Result<Command, String> {
     let backend = concat!(env!("CARGO_MANIFEST_DIR"), "/../../backend");
     let mut cmd = Command::new("uv");
     cmd.args(["run", "--project", backend, "python", "-m", "handoff"]);
@@ -125,5 +129,25 @@ fn build_command() -> Command {
     if let Ok(bind) = std::env::var("HANDOFF_BIND") {
         cmd.args(["--bind", &bind]);
     }
-    cmd
+    Ok(cmd)
+}
+
+#[cfg(not(debug_assertions))]
+fn build_command(resource_dir: Option<PathBuf>) -> Result<Command, String> {
+    let exe = if cfg!(windows) { "handoff-core.exe" } else { "handoff-core" };
+    let path = resource_dir
+        .ok_or("resource directory unavailable")?
+        .join("handoff-core")
+        .join(exe);
+    if !path.is_file() {
+        return Err(format!("the bundled HandOff core is missing: {}", path.display()));
+    }
+    #[allow(unused_mut)]
+    let mut cmd = Command::new(path);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: no console flash
+    }
+    Ok(cmd)
 }

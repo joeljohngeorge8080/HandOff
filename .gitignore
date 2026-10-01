@@ -30,3 +30,4 @@ app/src-tauri/gen/
 # Local HandOff data and OS noise
 /.handoff-dev/
 .DS_Store
+backend/*.spec
