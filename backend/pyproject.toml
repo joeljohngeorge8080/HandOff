@@ -1,0 +1,58 @@
+[project]
+name = "handoff"
+version = "0.1.0"
+description = "HandOff Python application core"
+authors = [
+    { name = "Joel John George", email = "joeljohngeorge2005@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "cryptography>=50.0.2",
+    "fastapi>=0.142.2",
+    "httpx>=0.28.1",
+    "platformdirs>=4.12.2",
+    "sqlalchemy>=2.1.1",
+    "uvicorn>=0.54.0",
+    "zeroconf>=0.151.5",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.28,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "mypy>=2.3.1",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.16.9",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = ["slow: generates large files", "network: needs working multicast mDNS"]
+filterwarnings = ["ignore:Using .httpx. with .starlette.testclient. is deprecated"]
+
+[tool.coverage.run]
+source = ["handoff"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106", "S603", "S104", "S110"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+files = ["src"]
+plugins = []
