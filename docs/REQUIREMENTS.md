@@ -393,6 +393,8 @@ Laptop A
 
 during Phase 1.
 
+The user may switch to another discovered device. Switching releases the current connection internally and is blocked while a transfer is active (ADR-046, ADR-047).
+
 ---
 
 ## FR-014 — Bidirectional Connection
@@ -626,9 +628,9 @@ Example:
 
 ```text
 photo.jpg
-photo (1).jpg
-photo (2).jpg
-photo (3).jpg
+photo(1).jpg
+photo(2).jpg
+photo(3).jpg
 ```
 
 The existing file shall never be overwritten automatically.
@@ -937,9 +939,8 @@ Example:
 
 ```json
 {
-  "event": "HAND_CLOSED",
-  "x": 0.62,
-  "y": 0.41,
+  "event": "gesture_detected",
+  "gesture": "closed_hand",
   "confidence": 0.94
 }
 ```

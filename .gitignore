@@ -1,0 +1,32 @@
+# Secrets (SECURITY.md §51)
+*.key
+*.pem
+*.crt
+.env
+.env.*
+secrets/
+credentials/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+backend/build/
+backend/dist/
+*.egg-info/
+
+# Node / Tauri
+node_modules/
+app/dist/
+app/src-tauri/target/
+app/src-tauri/binaries/
+app/src-tauri/gen/
+
+# Local HandOff data and OS noise
+/.handoff-dev/
+.DS_Store

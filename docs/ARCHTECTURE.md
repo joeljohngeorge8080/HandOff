@@ -164,14 +164,11 @@ Conceptually:
 ```text
 Application Data/
 │
+├── handoff.db
 ├── files/
-│   ├── imported/
-│   └── received/
-│
-├── database/
-│   └── application.db
-│
-└── config/
+├── received/
+├── transfers/
+└── temp/
 ```
 
 The exact platform-specific storage location will be defined during deployment implementation.
@@ -404,7 +401,9 @@ Laptop A
 
 in Phase 1.
 
-If the user wants to connect to another device, the existing connection must be disconnected first.
+If the user selects another discovered device, the application performs an internal graceful disconnect and then connects to the selected device (ADR-047).
+
+There is no user-facing Disconnect button. An active transfer blocks peer switching until it reaches a terminal state (`completed`, `failed`, `partially_completed`).
 
 ---
 
@@ -438,13 +437,17 @@ Phase 1 will use:
 Examples:
 
 ```text
-GET  /device/info
-GET  /health
-POST /connection/request
-POST /transfer
-GET  /transfer/{id}
-POST /receive-mode
+GET    /api/v1/device
+GET    /api/v1/health
+POST   /api/v1/connection
+DELETE /api/v1/connection
+GET    /api/v1/receive-mode
+POST   /api/v1/transfers
+POST   /api/v1/transfers/{id}/data
+GET    /api/v1/transfers/{id}
 ```
+
+`docs/API.md` is authoritative for endpoint names and payloads.
 
 ### HTTP streaming for file transfer
 
@@ -620,12 +623,16 @@ The transfer job has one overall status.
 Possible statuses:
 
 ```text
-PENDING
+CREATED
+VALIDATING
+ACCEPTED
 TRANSFERRING
 COMPLETED
 FAILED
-CANCELLED
+PARTIALLY_COMPLETED
 ```
+
+There is no `CANCELLED` state in Phase 1 (FR-026).
 
 Individual file progress can be tracked internally.
 
@@ -680,7 +687,7 @@ Conceptually:
 ```text
 Application Storage
 │
-├── imported/
+├── files/
 │   └── files added by user
 │
 └── received/
@@ -747,14 +754,11 @@ Logical storage:
 ```text
 Application Data
 │
-├── database/
-│   └── application.db
-│
+├── handoff.db
 ├── files/
-│   ├── imported/
-│   └── received/
-│
-└── config/
+├── received/
+├── transfers/
+└── temp/
 ```
 
 The exact OS-specific paths will be defined during deployment.
@@ -835,45 +839,40 @@ It should report observations/events.
 
 # 27. Future Gesture Interface
 
-The eventual interaction will support concepts such as:
+The eventual interaction uses the canonical event vocabulary of ADR-052:
 
 ```text
-HAND_OPEN
-HAND_CLOSED
-HAND_POSITION_CHANGED
-BODY_MOVED_LEFT
-BODY_MOVED_RIGHT
-TARGET_DETECTED
-TARGET_LOCKED
+pointer_move   pointer_click   pointer_down   pointer_up
+selection_changed
+drag_start     drag_move       drag_end
+grab           release
+gesture_detected
+direction_detected
 ```
 
-Example future event:
+Example future events:
 
 ```json
-{
-    "event": "HAND_CLOSED",
-    "x": 0.62,
-    "y": 0.41,
-    "confidence": 0.94
-}
+{ "event": "gesture_detected", "gesture": "closed_hand", "confidence": 0.94 }
+{ "event": "direction_detected", "direction": "right", "confidence": 0.91 }
 ```
 
-The application core will convert these observations into actions.
+The application core converts these observations into actions.
 
 Example:
 
 ```text
-HAND_CLOSED
+gesture_detected (closed_hand)
      ↓
 Grab selected file
 
-BODY_MOVED_RIGHT
+direction_detected (right)
      ↓
 Target selection
 
-HAND_OPEN
+release
      ↓
-Release / transfer
+Transfer
 ```
 
 This allows the CV system to be developed independently from the transfer system.
