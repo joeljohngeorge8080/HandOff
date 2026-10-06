@@ -80,6 +80,21 @@ async function boot(): Promise<void> {
     bus.emit({ source: "os", type: "pointer_click", x: ev.clientX / w, y: ev.clientY / h });
   });
 
+  if (import.meta.env.DEV) {
+    // Dev builds only: log every raw OS drag event, so "the drag never arrived" is visible.
+    void getCurrentWebview().onDragDropEvent((e) => {
+      const p = e.payload as { type: string; paths?: string[] };
+      console.log(`os drag ${p.type} paths=${JSON.stringify(p.paths ?? [])}`);
+    });
+    bus.subscribe((e) => {
+      if (e.type !== "drag_move") console.log(`event ${e.type}`);
+    });
+    await listen<{ phase?: string }>("edge-proximity", (e) => console.log(`proximity ${e.payload?.phase}`));
+    await listen<{ mode?: string; screen?: number; scale?: number }>("edge-mode", (e) =>
+      console.log(`window mode ${e.payload?.mode} screen=${e.payload?.screen} scale=${e.payload?.scale}`),
+    );
+  }
+
   await attachOsDrag(getCurrentWebview(), bus, () => ({
     width: window.innerWidth * window.devicePixelRatio,
     height: window.innerHeight * window.devicePixelRatio,
