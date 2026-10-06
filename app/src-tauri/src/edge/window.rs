@@ -101,7 +101,10 @@ pub fn apply(app: &AppHandle, mode: Mode, screen: &Screen, index: usize) -> taur
     };
     let r = layout(screen, mode);
     // Click-through first, so a shrinking window never briefly swallows clicks.
-    win.set_ignore_cursor_events(!mode.hittable())?;
+    // Debug builds only: HANDOFF_DEV_HITTABLE=1 never makes the window click-through, to tell a
+    // click-through problem from a window that refuses OS drops altogether.
+    let always_hit = cfg!(debug_assertions) && std::env::var_os("HANDOFF_DEV_HITTABLE").is_some();
+    win.set_ignore_cursor_events(!(mode.hittable() || always_hit))?;
     let _ = win.set_focusable(mode.focusable());
     place(&win, &r)?;
     win.set_always_on_top(true)?;
