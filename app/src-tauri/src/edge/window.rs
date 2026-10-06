@@ -82,6 +82,13 @@ fn place(win: &tauri::WebviewWindow, r: &Rect) -> tauri::Result<()> {
             if current != Some(r) {
                 return; // a newer placement owns the window now
             }
+            #[cfg(debug_assertions)]
+            if let (Ok(p), Ok(sz)) = (win.outer_position(), win.outer_size()) {
+                eprintln!(
+                    "[edge] wanted {}x{} at ({},{}), window is {}x{} at ({},{})",
+                    r.w, r.h, r.x, r.y, sz.width, sz.height, p.x, p.y
+                );
+            }
             let off = win
                 .outer_position()
                 .map(|p| p.x != r.x || p.y != r.y)

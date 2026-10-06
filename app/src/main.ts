@@ -82,6 +82,16 @@ async function boot(): Promise<void> {
 
   if (import.meta.env.DEV) {
     // Dev builds only: log every raw OS drag event, so "the drag never arrived" is visible.
+    // Browser-level drag events: if these fire but "os drag" does not, the webview handled the
+    // drop itself and the native drop handler is not installed.
+    for (const t of ["dragenter", "dragover", "drop"] as const) {
+      let last = 0;
+      window.addEventListener(t, (e) => {
+        if (Date.now() - last < 500) return;
+        last = Date.now();
+        console.log(`dom ${t} types=${JSON.stringify([...(e.dataTransfer?.types ?? [])])}`);
+      });
+    }
     void getCurrentWebview().onDragDropEvent((e) => {
       const p = e.payload as { type: string; paths?: string[] };
       console.log(`os drag ${p.type} paths=${JSON.stringify(p.paths ?? [])}`);
