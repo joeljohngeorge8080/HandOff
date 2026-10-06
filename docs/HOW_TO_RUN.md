@@ -65,7 +65,24 @@ Optional override: `HANDOFF_BIND=<address>` sets the address the peer API binds 
 - Reset: `rm -rf /tmp/ho-a /tmp/ho-b` gives both instances fresh identities. Reconnecting after a reset is a new
   trust relationship, because trust is stored per device.
 
-## 4. Tests (no GUI)
+## 4. Linux firewall (ufw)
+
+HandOff never changes the firewall (ADR-027). If `ufw` is active, it drops incoming TCP on the peer port
+(**8765**) while mDNS (UDP 5353) still works. Symptom: the other device appears in the list, but **Connect**
+or **Send** from it fails with "The device could not be reached", while connecting *from* this machine works.
+Linux-to-Linux tests on one machine don't show it, because loopback traffic is always allowed.
+
+Allow the port for your LAN only (replace the subnet with your own, see `ip -4 addr`):
+
+```bash
+sudo ufw allow from 10.180.183.0/24 to any port 8765 proto tcp comment 'HandOff'
+sudo ufw status
+```
+
+Check from the other machine (Windows PowerShell): `Test-NetConnection <this-ip> -Port 8765` should report
+`TcpTestSucceeded : True`. If you changed `HANDOFF_PORT` in a dev build, open that port instead.
+
+## 5. Tests (no GUI)
 
 ```bash
 cd backend && uv run pytest        # backend suite

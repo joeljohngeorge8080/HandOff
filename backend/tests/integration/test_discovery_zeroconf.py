@@ -24,7 +24,9 @@ def test_two_instances_find_each_other_over_real_mdns():
         assert (found.device_name, found.address, found.port) == ("Bob-Laptop", "127.0.0.1", 41002)
         assert found.fingerprint == "KEY-Bob-Laptop" and found.api_version == "v1"
         assert one.get(ads[0].device_id) is None  # never lists itself
-        assert [p.device_name for p in one.peers()] == ["Bob-Laptop"]
+        # Real multicast also reaches any genuine HandOff on the LAN: judge only our own devices.
+        names = [p.device_name for p in one.peers()]
+        assert names.count("Bob-Laptop") == 1 and "Alice-Laptop" not in names
     finally:
         one.stop()
         two.stop()
