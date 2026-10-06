@@ -56,9 +56,22 @@ describe("waking up", () => {
     expect(kind(model)).toBe("panel");
     expect(effects).toContainEqual({ type: "window", mode: "panel" });
   });
-  it("a click anywhere but the handle does nothing", () => {
+  it("a click while the edge is idle does nothing", () => {
     const { model } = run(withPeer(), { ...os, type: "pointer_click", x: 1, y: 0.5 });
     expect(kind(model)).toBe("idle");
+  });
+  it("pressing the button on the handle (which looks like a drag) still lets the click open the panel", () => {
+    const { model } = run(
+      withPeer(),
+      { type: "proximity", phase: "dwell" },
+      { type: "proximity", phase: "drag" },
+      { ...os, type: "pointer_click", x: 1, y: 0.5 },
+    );
+    expect(kind(model)).toBe("panel");
+  });
+  it("a click on an armed strip opens the panel too, a real drag never produces a click", () => {
+    const { model } = run(withPeer(), { type: "proximity", phase: "drag" }, { ...os, type: "pointer_click", x: 1, y: 0.5 });
+    expect(kind(model)).toBe("panel");
   });
   it("the pointer leaving cancels everything that was only waiting for a drop", () => {
     for (const phase of ["near", "drag", "dwell"] as const) {

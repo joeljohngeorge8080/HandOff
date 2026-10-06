@@ -143,7 +143,7 @@ export function reduce(m: Model, input: Input): Step {
     case "release":
       return onRelease(m, input.paths);
     case "pointer_click":
-      return m.view.kind === "handle" ? openPanel(m) : stay(m);
+      return m.view.kind === "handle" || m.view.kind === "armed" ? openPanel(m) : stay(m);
     case "inspected":
       return onInspected(m, input.result);
     case "inspect_failed":
@@ -184,6 +184,9 @@ function onProximity(m: Model, phase: Proximity): Step {
     return preSend(m.view) && k !== "idle" ? withView(m, { kind: "idle" }) : stay(m);
   }
   if (!PRE_DRAG.has(k)) return stay(m);
+  // Pressing the button on the handle looks like a drag to the pointer watcher, but it is the
+  // click that opens the panel. Do not turn the handle into the drop strip underneath it.
+  if (k === "handle" && phase === "drag") return stay(m);
   const next: ViewKind = phase === "near" ? "approach" : phase === "drag" ? "armed" : "handle";
   // A weaker signal never downgrades a stronger one (e.g. "near" while already armed).
   const rank: Record<string, number> = { idle: 0, approach: 1, handle: 2, armed: 3 };
