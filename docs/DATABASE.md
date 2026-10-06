@@ -1,5 +1,7 @@
 # Database Design
 
+> **Phase 2 amendment (ADR-055).** No schema change. Settings: new key `receive_directory` (absolute path; unset means the OS Desktop); `receive_mode` is **obsolete** — left in existing databases, ignored, never deleted. Received files no longer create `files` rows; their `transfer_files.file_id` is NULL and `original_name` keeps the sender's file name (the contract key); the name actually written, after any `(1)` suffix, is in the `FILE_RECEIVED` audit entry and the reply's `saved_as`. Dropped files are imported as `files(source='imported')` and logically deleted (`deleted_at`) when their transfer ends. New audit event `RECEIVE_DIRECTORY_CHANGED` replaces `RECEIVE_MODE_CHANGED` (the old events stay valid in history).
+
 ## 1. Purpose
 
 This document defines the persistent data model for HandOff Phase 1.
@@ -243,6 +245,8 @@ devices
 | `platform` | TEXT | NOT NULL | Windows/Linux |
 | `last_ip` | TEXT | NULL | Most recently known IP |
 | `port` | INTEGER | NULL | Last known API port |
+| `public_key` | TEXT | NULL | Peer's public Ed25519 key (base64). The private key is never stored here |
+| `is_trusted` | INTEGER | NOT NULL, DEFAULT 0 | 1 when the user connected/trusted this device |
 | `status` | TEXT | NOT NULL | Current availability |
 | `first_seen_at` | DATETIME | NOT NULL | First discovery |
 | `last_seen_at` | DATETIME | NOT NULL | Last discovery |
@@ -322,7 +326,7 @@ files
 | Column | Type | Constraints | Description |
 |---|---|---|---|
 | `id` | TEXT | PK | Application file UUID |
-| `original_name` | TEXT | NOT NULL | Original filename |
+| `original_name` | TEXT | NOT NULL | Display filename; made unique among active files as `name(1).ext` (ADR-020, ADR-053). The sender's true name is kept in `transfer_files.original_name` |
 | `stored_name` | TEXT | NOT NULL | Actual filesystem name |
 | `extension` | TEXT | NOT NULL | File extension |
 | `mime_type` | TEXT | NULL | Detected MIME type |
@@ -482,8 +486,8 @@ transfers
 |---|---|---|---|
 | `id` | TEXT | PK | Transfer UUID |
 | `direction` | TEXT | NOT NULL | `sent` or `received` |
-| `source_device_id` | TEXT | FK | Sending device |
-| `destination_device_id` | TEXT | FK | Receiving device |
+| `source_device_id` | TEXT | FK, NULL | Sending device. NULL means this device (the local device has no `devices` row) |
+| `destination_device_id` | TEXT | FK, NULL | Receiving device. NULL means this device |
 | `status` | TEXT | NOT NULL | Transfer state |
 | `file_count` | INTEGER | NOT NULL | Number of files |
 | `total_size_bytes` | INTEGER | NOT NULL | Total original file size |
@@ -613,7 +617,7 @@ transfer_files
 |---|---|---|---|
 | `id` | INTEGER | PK | Internal ID |
 | `transfer_id` | TEXT | FK, NOT NULL | Transfer job |
-| `file_id` | TEXT | FK, NOT NULL | File |
+| `file_id` | TEXT | FK, NULL | File. NULL when a received file failed validation and never became a managed file |
 | `original_name` | TEXT | NOT NULL | Name at transfer time |
 | `size_bytes` | INTEGER | NOT NULL | File size |
 | `sha256` | TEXT | NOT NULL | Hash at transfer time |
@@ -820,7 +824,10 @@ Phase-1 settings include at minimum:
 receive_mode
 history_retention
 device_name
+schema_version
 ```
+
+`schema_version` drives the in-app upgrade routine (see Schema Changes).
 
 Storage locations may also be represented through settings if configurable in the implementation.
 
@@ -964,6 +971,10 @@ transfer_id
 file_id
 status
 ```
+
+### One active transfer
+
+A partial unique index (`uq_transfers_one_active`) allows at most one transfer whose status is not `completed`, `failed` or `partially_completed`. The database itself therefore enforces the Phase-1 one-active-transfer rule (ADR-015).
 
 ### Audit Logs
 

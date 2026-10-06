@@ -1,5 +1,7 @@
 # Requirements
 
+> **Phase 2 amendment (ADR-054 / ADR-055).** The gallery, file selection, Send button and Receive Mode (§2, §7, FR-005..FR-008, FR-017..FR-023, FR-030, FR-036, FR-037, and the matching items in §30/§31) are **superseded**. Phase 2 scope: a right-edge drop strip; OS drag-and-drop of `.txt .jpg .jpeg .png .pdf` (each at most 50 MB, case-insensitive; `.exe` and `.mp4` removed); automatic send to the connected trusted peer; "No HandOff device connected" when none; a receiver-local destination folder (default OS Desktop) chosen with the native picker; `name(1).ext` collision names; mirrored send and receive animations driven by real transfer state. Folders, shortcuts, executables and unsupported types are rejected with a clear message. **Phase 2 definition of done:** drag one and several files from Desktop / Explorer / a Linux file manager to the edge on Windows and Linux; they arrive in the receiver's chosen folder with verified SHA-256; rejections and no-peer drops show clear messages; the edge returns to idle after success and after every failure. Computer vision is now Phase 3 (§29).
+
 ## 1. Document Purpose
 
 This document defines the functional and non-functional requirements for **HandOff Phase 1 (MVP)**.
@@ -393,6 +395,8 @@ Laptop A
 
 during Phase 1.
 
+The user may switch to another discovered device. Switching releases the current connection internally and is blocked while a transfer is active (ADR-046, ADR-047).
+
 ---
 
 ## FR-014 — Bidirectional Connection
@@ -626,9 +630,9 @@ Example:
 
 ```text
 photo.jpg
-photo (1).jpg
-photo (2).jpg
-photo (3).jpg
+photo(1).jpg
+photo(2).jpg
+photo(3).jpg
 ```
 
 The existing file shall never be overwritten automatically.
@@ -937,9 +941,8 @@ Example:
 
 ```json
 {
-  "event": "HAND_CLOSED",
-  "x": 0.62,
-  "y": 0.41,
+  "event": "gesture_detected",
+  "gesture": "closed_hand",
   "confidence": 0.94
 }
 ```

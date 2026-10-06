@@ -1,5 +1,19 @@
 # API
 
+> **Phase 2 amendment (ADR-055) — breaking.** Removed: `GET /api/v1/receive-mode` (§13), the `receive_mode` field of `GET /api/v1/device`, the Receive Mode check in §15/§16, the IPC actions `receive_mode.get` / `receive_mode.set`, and the error code `RECEIVE_MODE_DISABLED`. Allowed extensions are `.txt .jpg .jpeg .png .pdf`. The receiver writes to its own `receive_directory`; an invalid one returns `RECEIVER_NOT_READY`. New local IPC actions (never exposed on the LAN): `drop.inspect`, `drop.send`, and `settings.set` with key `receive_directory`. New core-to-UI push events: `transfer.updated`, `connection.changed`. Peers must run 0.2.x or later.
+
+> **Phase 2 local IPC additions (ADR-054; never exposed on the LAN).**
+>
+> `drop.inspect {paths[]}` → `{ok, file_count, total_size, items[{name, ok, size?, code?, reason?, message?}]}`. Read-only: copies and records nothing. `reason` is one of `unsupported_type, executable_content, directory, symlink, too_large, missing, invalid_name, unreadable`.
+>
+> `drop.send {paths[]}` → `{transfer}`. Order: connected online peer (`DEVICE_NOT_FOUND` "No HandOff device connected" / `DEVICE_OFFLINE`), no active transfer (`INVALID_STATE`), then **every** path validated (all-or-nothing; the error's `details.items` lists each verdict), then `files.import` (copy + SHA-256) and the existing `transfer.create`. The managed copies are logically deleted when the transfer is terminal. At most 100 paths.
+>
+> `settings.set {key:"receive_directory", value}` validates the folder (absolute, existing, writable, not inside HandOff's data directory; otherwise `INVALID_PATH`). `status.snapshot` carries `receive_directory` instead of `receive_mode`.
+>
+> **Push events** (stdout lines with `event` and no `id`): `transfer.updated` (the transfer as in `history.list`, progress throttled to ~4 Hz, every status change delivered) and `connection.changed` (the connection snapshot). Events only notify; the database stays the truth and `status.snapshot` can always recover a missed one.
+>
+> Peer response addition: `POST /transfers/{id}/data` file results may carry `saved_as` (the name written on the receiver). `name` remains the manifest name.
+
 ## 1. Purpose
 
 This document defines the API contracts used by HandOff.
@@ -249,18 +263,26 @@ Phase 1 permits exactly one connected peer.
 
 ## POST `/api/v1/connection`
 
-Used to establish a logical connection with a discovered peer.
+Sent by the initiating device to a discovered peer to establish the logical connection.
+
+The request carries the **initiator's** own identity. It must be signed (see §43.1).
 
 ### Request
 
 ```json
 {
-  "device_id": "7e7d8c2a-5e9e-4e1c-9a7d-9a1c4e1f7a31",
-  "device_name": "Aaron-Laptop",
-  "address": "192.168.1.15",
+  "device_id": "3b1f6c0e-8a52-4c7e-9d11-2f6a7c9e0b44",
+  "device_name": "Joel-Laptop",
+  "public_key": "<base64 Ed25519 public key>",
+  "platform": "linux",
   "port": 8765
 }
 ```
+
+`port` is the port on which the initiator's own peer API listens, so the peer can reach it back.
+`public_key` must be the raw 32-byte Ed25519 key, base64-encoded. If the device ID is already known, the key must match the stored one; a changed key is rejected (`DEVICE_NOT_TRUSTED`).
+
+If this device is already connected to a *different* device that is online, the request is rejected with `DEVICE_ALREADY_CONNECTED`.
 
 ### Response
 
@@ -268,9 +290,13 @@ Used to establish a logical connection with a discovered peer.
 {
   "connection_id": "conn_01JABC123",
   "device_id": "7e7d8c2a-5e9e-4e1c-9a7d-9a1c4e1f7a31",
+  "device_name": "Aaron-Laptop",
+  "public_key": "<base64 Ed25519 public key>",
   "status": "connected"
 }
 ```
+
+Each side stores the other's `device_id`, `device_name` and `public_key` and marks it `is_trusted = true` (ADR-048).
 
 No remote user approval is required in Phase 1.
 
@@ -310,11 +336,23 @@ If no peer is connected:
 
 ---
 
+# 12.1 Release Connection
+
+## DELETE `/api/v1/connection`
+
+Sent by a device that is switching to another peer (ADR-047). It is an **internal** operation; there is no user-facing Disconnect button in Phase 1.
+
+The receiving peer clears its active-peer state. Trust (`is_trusted`) is not removed. The request is best effort: the sender proceeds with the switch even if the old peer is unreachable.
+
+A switch must be rejected locally (`INVALID_STATE`) while a transfer is not in a terminal state.
+
+---
+
 # 13. Receive Mode
 
 ## GET `/api/v1/receive-mode`
 
-Returns the current receive state.
+Returns the current receive state. Read-only for peers.
 
 ### Response
 
@@ -324,47 +362,11 @@ Returns the current receive state.
 }
 ```
 
----
+Receive Mode is **changed only locally by the user** through the internal API (`receive_mode.set`). The peer API has no `PUT /receive-mode`: a remote device must never change another device's receive state (ADR-012, ADR-053).
 
-## PUT `/api/v1/receive-mode`
+When enabled, the device automatically accepts valid transfers from **trusted** peers.
 
-Changes the receive mode.
-
-### Request
-
-```json
-{
-  "enabled": true
-}
-```
-
-### Response
-
-```json
-{
-  "enabled": true
-}
-```
-
-When:
-
-```json
-{
-  "enabled": true
-}
-```
-
-the device automatically accepts valid incoming transfers.
-
-When:
-
-```json
-{
-  "enabled": false
-}
-```
-
-incoming transfers must be rejected.
+When disabled, incoming transfers must be rejected with `RECEIVE_MODE_DISABLED` (HTTP 409).
 
 ---
 
@@ -407,30 +409,52 @@ PARTIALLY_COMPLETED
 
 # 15. Transfer Creation
 
-## POST `/api/v1/transfers`
+## Internal: `transfer.create`
 
-Creates a transfer job.
+The UI sends **file IDs only** (ADR-050). The backend reads the stored name, size and SHA-256 of each file.
 
-The sender must create the transfer before uploading its data.
+```json
+{
+  "action": "transfer.create",
+  "file_ids": ["file_001", "file_002"],
+  "destination_device_id": "7e7d8c2a-5e9e-4e1c-9a7d-9a1c4e1f7a31"
+}
+```
+
+## Peer: POST `/api/v1/transfers`
+
+Sent by the sender's backend to the receiver. It carries the transfer **manifest** (ADR-051).
+
+The sender must create the transfer before uploading its data. Send an `Idempotency-Key` header.
 
 ### Request
 
 ```json
 {
-  "destination_device_id": "7e7d8c2a-5e9e-4e1c-9a7d-9a1c4e1f7a31",
-  "file_count": 3,
+  "transfer_id": "tr_01JABC789",
+  "source_device_id": "3b1f6c0e-8a52-4c7e-9d11-2f6a7c9e0b44",
+  "file_count": 2,
   "total_size": 18432000,
-  "archive_name": "handoff-transfer-01.zip"
+  "archive_name": "handoff-transfer-01.zip",
+  "files": [
+    {
+      "file_id": "file_001",
+      "filename": "photo.jpg",
+      "size": 123456,
+      "sha256": "9f86d081884c7d659a2feaa0c55ad015..."
+    }
+  ]
 }
 ```
+
+The sender's stored hash is authoritative. The receiver verifies every received file against the manifest.
 
 ### Response
 
 ```json
 {
   "transfer_id": "tr_01JABC789",
-  "status": "created",
-  "destination_device_id": "7e7d8c2a-5e9e-4e1c-9a7d-9a1c4e1f7a31",
+  "status": "accepted",
   "upload_url": "/api/v1/transfers/tr_01JABC789/data"
 }
 ```
@@ -502,7 +526,7 @@ The archive must not be treated as permanent user storage.
 
 ## POST `/api/v1/transfers/{transfer_id}/data`
 
-Uploads the transfer archive.
+Uploads the transfer archive. Requires `Content-Type: application/zip` (`415` otherwise).
 
 The body contains the ZIP archive as a binary stream.
 
@@ -518,15 +542,42 @@ The implementation must stream the request to disk.
 
 It must not load the complete archive into memory.
 
-### Successful response
+The upload is bounded: `Content-Length` above the declared size (plus ZIP overhead) is rejected up front, and a body without `Content-Length` is cut off once it exceeds that bound (`413 FILE_TOO_LARGE`). The transfer is then marked `failed` and all temporary data is removed. An upload that makes no progress for a minute, or whose sender disconnects, is also failed.
+
+### Successful response (`200`)
 
 ```json
 {
   "transfer_id": "tr_01JABC789",
   "status": "completed",
-  "files_received": 3
+  "files_received": 3,
+  "files": [
+    { "name": "photo.jpg", "status": "completed", "failure_code": null }
+  ]
 }
 ```
+
+`status` is `completed` or `partially_completed`. In the partial case the failed files carry `"status": "failed"` and a `failure_code` such as `INVALID_HASH`.
+
+### Failed response (`422`)
+
+If no file passed verification, or the archive was rejected as a whole:
+
+```json
+{
+  "error": {
+    "code": "TRANSFER_FAILED",
+    "message": "No file passed verification.",
+    "details": {
+      "transfer_id": "tr_01JABC789",
+      "status": "failed",
+      "files": [ { "name": "photo.jpg", "status": "failed", "failure_code": "INVALID_HASH" } ]
+    }
+  }
+}
+```
+
+A structurally unsafe archive (traversal, entries not in the manifest, not a ZIP) is rejected with its specific code (`INVALID_PATH`, `TRANSFER_VALIDATION_FAILED`, `TRANSFER_ARCHIVE_INVALID`) and the transfer is `failed`.
 
 ---
 
@@ -566,26 +617,11 @@ partially_completed
 
 # 21. Transfer Progress
 
-The Tauri UI should poll:
+The Tauri UI never calls the peer API directly.
 
-```text
-GET /api/v1/transfers/{transfer_id}
-```
+The UI obtains progress from its local Python core through the internal `status.snapshot` action (polled about once per second). The core tracks progress itself (`bytes_transferred`, `total_size`, `status`).
 
-rather than requiring WebSockets for Phase 1.
-
-The polling interval should be reasonable and configurable internally.
-
-The UI can use:
-
-```text
-bytes_received
-total_size
-progress
-status
-```
-
-to render transfer progress.
+`GET /api/v1/transfers/{transfer_id}` is a peer endpoint used by the sender's core when it needs the receiver's view of a transfer.
 
 ---
 
@@ -679,13 +715,13 @@ photo.jpg
 becomes:
 
 ```text
-photo (1).jpg
+photo(1).jpg
 ```
 
 If that exists:
 
 ```text
-photo (2).jpg
+photo(2).jpg
 ```
 
 The renaming operation must continue until a unique destination filename is found.
@@ -714,13 +750,13 @@ Only validated files may enter permanent Received storage.
 
 ---
 
-# 27. Transfer History API
+# 27. Transfer History
 
-## GET `/api/v1/transfers`
+Transfer history is **local** to each device and is read through the internal API, not the peer API:
 
-Returns transfer history.
-
-### Example
+```json
+{ "action": "history.list", "payload": { "limit": 50, "offset": 0 } }
+```
 
 ```json
 {
@@ -729,10 +765,16 @@ Returns transfer history.
       "transfer_id": "tr_01JABC789",
       "direction": "sent",
       "peer_device_id": "7e7d8c2a-5e9e-4e1c-9a7d-9a1c4e1f7a31",
+      "peer_device_name": "Aaron-Laptop",
       "file_count": 3,
+      "total_size": 18432000,
+      "archive_size": 18433100,
+      "bytes_transferred": 18433100,
       "status": "completed",
+      "error_code": null,
       "created_at": "2026-10-01T10:20:00Z",
-      "completed_at": "2026-10-01T10:20:05Z"
+      "completed_at": "2026-10-01T10:20:05Z",
+      "files": [ { "name": "photo.jpg", "size": 123456, "status": "completed", "failure_code": null } ]
     }
   ]
 }
@@ -740,13 +782,11 @@ Returns transfer history.
 
 ---
 
-# 28. Transfer History Detail
+# 28. Transfer Status
 
-## GET `/api/v1/transfers/{transfer_id}`
+Peer endpoint `GET /api/v1/transfers/{transfer_id}` (see §20) lets the *sender of that transfer* read the receiver's view of it. Other devices get `404 TRANSFER_NOT_FOUND`.
 
-The same endpoint provides detailed transfer status.
-
-Once completed, it should contain sufficient information for the UI to display the transfer in history.
+The local UI reads a single transfer through `transfer.status { "transfer_id": ... }` and the running one through `status.snapshot` (§21).
 
 ---
 
@@ -857,7 +897,11 @@ Example internal request:
 }
 ```
 
-The Python core then performs the network transfer.
+The Python core then performs the network transfer **in the background**; the action returns immediately with the new transfer (status `created`), so the UI is never blocked.
+
+Before creating the transfer, the sender asks the peer whether Receive Mode is on (FR-023). If it is off, `transfer.create` fails at once with `RECEIVE_MODE_DISABLED` ("<name> is not accepting files") and **no transfer or history entry is created**. If the setting changes after that check, the peer rejects the transfer and it appears in history as `failed` with that code.
+
+`transfer.create` also fails with `INVALID_STATE` if a transfer is already active, and with `DEVICE_NOT_FOUND`/`DEVICE_OFFLINE` if the destination is not the connected, online peer.
 
 ---
 
@@ -944,6 +988,23 @@ CONNECTION_RESET
 INVALID_API_VERSION
 ```
 
+## Authentication and abuse protection
+
+```text
+INVALID_SIGNATURE
+REPLAYED_REQUEST
+DEVICE_NOT_TRUSTED
+RATE_LIMITED
+```
+
+## Storage
+
+```text
+INSUFFICIENT_STORAGE
+INVALID_PATH
+INVALID_HASH
+```
+
 ## Application
 
 ```text
@@ -968,7 +1029,13 @@ The peer API should use conventional HTTP status codes.
 | `413` | Payload too large |
 | `422` | Validation failed |
 | `500` | Internal error |
+| `401` | Missing/invalid signature, stale timestamp, replayed request |
+| `403` | Device is unknown or not trusted |
+| `408` | Upload stalled / request timeout |
+| `415` | Unsupported media type (upload must be `application/zip`) |
+| `429` | Too many invalid requests |
 | `503` | Service unavailable |
+| `507` | Insufficient storage on the receiving device |
 
 Example:
 
@@ -1082,12 +1149,12 @@ Application State Machine
 
 # 39. Future CV Event Structure
 
-General structure:
+General structure (ADR-052):
 
 ```json
 {
   "event_id": "evt_01JABC123",
-  "event": "HAND_CLOSED",
+  "event": "gesture_detected",
   "timestamp": "2026-10-01T10:20:05.123Z",
   "confidence": 0.95,
   "data": {}
@@ -1098,262 +1165,48 @@ General structure:
 
 # 40. Future CV Events
 
-The following event types are reserved.
-
-## HAND_DETECTED
-
-```json
-{
-  "event": "HAND_DETECTED",
-  "confidence": 0.96,
-  "data": {
-    "x": 0.62,
-    "y": 0.41
-  }
-}
-```
-
----
-
-## HAND_LOST
-
-```json
-{
-  "event": "HAND_LOST",
-  "confidence": 0.91,
-  "data": {}
-}
-```
-
----
-
-## HAND_OPENED
-
-```json
-{
-  "event": "HAND_OPENED",
-  "confidence": 0.97,
-  "data": {
-    "x": 0.62,
-    "y": 0.41
-  }
-}
-```
-
----
-
-## HAND_CLOSED
-
-```json
-{
-  "event": "HAND_CLOSED",
-  "confidence": 0.96,
-  "data": {
-    "x": 0.62,
-    "y": 0.41
-  }
-}
-```
-
----
-
-## POINTER_MOVE
-
-Used for future hand-controlled mouse movement.
-
-```json
-{
-  "event": "POINTER_MOVE",
-  "confidence": 0.94,
-  "data": {
-    "x": 0.73,
-    "y": 0.42
-  }
-}
-```
-
-Coordinates are normalized:
+The following canonical event names are reserved (ADR-052). The earlier uppercase names are superseded.
 
 ```text
-x = 0.0 → 1.0
-y = 0.0 → 1.0
+pointer_move   pointer_click   pointer_down   pointer_up
+selection_changed
+drag_start     drag_move       drag_end
+grab           release
+gesture_detected
+direction_detected
 ```
 
----
-
-## POINTER_CLICK
+Pointer and drag events carry normalized coordinates (`x`, `y` in 0.0 to 1.0) in `data`:
 
 ```json
-{
-  "event": "POINTER_CLICK",
-  "confidence": 0.95,
-  "data": {
-    "button": "left"
-  }
-}
+{ "event": "pointer_move", "confidence": 0.94, "data": { "x": 0.73, "y": 0.42 } }
 ```
 
----
-
-## POINTER_DOUBLE_CLICK
+`gesture_detected` carries a gesture state:
 
 ```json
-{
-  "event": "POINTER_DOUBLE_CLICK",
-  "confidence": 0.95,
-  "data": {
-    "button": "left"
-  }
-}
+{ "event": "gesture_detected", "gesture": "closed_hand", "confidence": 0.94 }
 ```
 
----
-
-## DRAG_START
+`direction_detected` carries a direction:
 
 ```json
-{
-  "event": "DRAG_START",
-  "confidence": 0.94,
-  "data": {
-    "x": 0.61,
-    "y": 0.42
-  }
-}
-```
-
----
-
-## DRAG_MOVE
-
-```json
-{
-  "event": "DRAG_MOVE",
-  "confidence": 0.93,
-  "data": {
-    "x": 0.74,
-    "y": 0.43
-  }
-}
-```
-
----
-
-## DRAG_END
-
-```json
-{
-  "event": "DRAG_END",
-  "confidence": 0.96,
-  "data": {
-    "x": 0.82,
-    "y": 0.44
-  }
-}
-```
-
----
-
-## BODY_MOVE_LEFT
-
-```json
-{
-  "event": "BODY_MOVE_LEFT",
-  "confidence": 0.91,
-  "data": {
-    "movement_score": 0.82
-  }
-}
-```
-
----
-
-## BODY_MOVE_RIGHT
-
-```json
-{
-  "event": "BODY_MOVE_RIGHT",
-  "confidence": 0.92,
-  "data": {
-    "movement_score": 0.85
-  }
-}
-```
-
----
-
-## TARGET_DETECTED
-
-```json
-{
-  "event": "TARGET_DETECTED",
-  "confidence": 0.94,
-  "data": {
-    "target_device_id": "device_003",
-    "target_score": 0.91
-  }
-}
-```
-
----
-
-## TARGET_LOCKED
-
-```json
-{
-  "event": "TARGET_LOCKED",
-  "confidence": 0.97,
-  "data": {
-    "target_device_id": "device_003",
-    "lock_duration_ms": 3000
-  }
-}
+{ "event": "direction_detected", "direction": "right", "confidence": 0.91 }
 ```
 
 ---
 
 # 41. Future CV Action Mapping
 
-The application should eventually translate CV events into application actions.
-
-Example:
+The application core translates CV events into application actions. Example:
 
 ```text
-HAND_CLOSED
-     ↓
-Selected file becomes grabbed
-```
-
-```text
-POINTER_MOVE
-     ↓
-Virtual pointer moves
-```
-
-```text
-DRAG_START
-     ↓
-File becomes attached to pointer
-```
-
-```text
-BODY_MOVE_RIGHT
-     ↓
-Target search begins
-```
-
-```text
-TARGET_LOCKED
-     ↓
-Receiver becomes selected
-```
-
-```text
-HAND_OPENED
-     ↓
-File release
-     ↓
-Transfer job
+gesture_detected (closed_hand)  →  grab selected file
+pointer_move                    →  virtual pointer moves
+drag_start                      →  file attached to pointer
+direction_detected (right)      →  target search begins
+selection_changed               →  receiver selected
+release                         →  transfer job created
 ```
 
 The CV engine must not directly invoke:
@@ -1401,6 +1254,48 @@ Security details are defined in:
 ```text
 docs/SECURITY.md
 ```
+
+---
+
+# 43.1 Request Signing
+
+Every peer request (except discovery metadata in mDNS) is signed with the sender's Ed25519 private key (ADR-053).
+
+Headers:
+
+```text
+X-Device-ID: <sender device_id>
+X-Timestamp: <ISO 8601 UTC>
+X-Nonce: <unique random value>
+X-Signature: <base64 Ed25519 signature>
+```
+
+The signed string is:
+
+```text
+METHOD|PATH|device_id|timestamp|nonce|transfer_id
+```
+
+(`transfer_id` is empty when the request is not transfer-scoped.)
+
+The receiver rejects the request when:
+
+- the device is not trusted (except for `POST /connection`, where the key in the body verifies the signature);
+- the signature is invalid;
+- the timestamp is outside a ±60 second window;
+- the nonce has already been seen.
+
+Rejections are written to `audit_logs` (`INVALID_DEVICE`).
+
+Every endpoint requires a signature **except** `GET /api/v1/health`, which returns only `{status, device_id}` so reachability can be checked without a handshake.
+
+The signature is verified against the stored public key of a *trusted* device. The single exception is `POST /api/v1/connection`, where the key in the body is used (and must match any stored key).
+
+Repeated invalid requests from one address are rate limited (`429 RATE_LIMITED`) for a short window; only the first crossing of the limit is audited, so a flood cannot fill the audit log.
+
+Path used for signing is the percent-decoded request path. Transfer IDs are limited to `[A-Za-z0-9_-]{1,64}`.
+
+The client verifies the server's identity by pinning its TLS public key.
 
 ---
 
