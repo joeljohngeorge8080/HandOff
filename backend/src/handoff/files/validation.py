@@ -50,12 +50,31 @@ def validate_filename(name: str) -> str:
     return name
 
 
+# Leading bytes of Windows (PE "MZ") and Linux (ELF) executables (ADR-055).
+_EXECUTABLE_MAGIC = (b"MZ", b"\x7fELF")
+
+
+def looks_executable(head: bytes) -> bool:
+    """True when the first bytes of a file are an executable header, whatever its name says."""
+    return head.startswith(_EXECUTABLE_MAGIC)
+
+
+def reject_executable_content(head: bytes, file_name: str) -> None:
+    """Catch a renamed executable (e.g. `setup.exe` renamed to `photo.jpg`). Never executed."""
+    if looks_executable(head):
+        raise HandOffError(
+            "FILE_TYPE_NOT_SUPPORTED",
+            "This file looks like an executable program and is not supported.",
+            {"file_name": file_name[:80], "reason": "executable_content"},
+        )
+
+
 def validate_extension(name: str) -> str:
     ext = normalize_extension(name)
     if ext not in ALLOWED_EXTENSIONS:
         raise HandOffError(
             "FILE_TYPE_NOT_SUPPORTED",
-            "This file type is not supported in Phase 1.",
+            "This file type is not supported.",
             {"file_name": name[:80], "extension": ext, "allowed": sorted(ALLOWED_EXTENSIONS)},
         )
     return ext
@@ -68,4 +87,4 @@ def validate_size(size: int, file_name: str | None = None) -> None:
         details: dict[str, Any] = {"size": size, "maximum_size": MAX_FILE_SIZE}
         if file_name:
             details["file_name"] = file_name[:80]
-        raise HandOffError("FILE_TOO_LARGE", "The file exceeds the 50 MB Phase-1 limit.", details)
+        raise HandOffError("FILE_TOO_LARGE", "The file exceeds the 50 MB limit.", details)

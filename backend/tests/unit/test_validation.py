@@ -3,6 +3,7 @@ import pytest
 from handoff.config import MAX_FILE_SIZE
 from handoff.errors import HandOffError
 from handoff.files.validation import (
+    looks_executable,
     normalize_extension,
     validate_extension,
     validate_filename,
@@ -12,12 +13,14 @@ from handoff.files.validation import (
 MB = 1024 * 1024
 
 
-@pytest.mark.parametrize("name", ["a.txt", "a.jpg", "a.mp4", "a.exe"])
+@pytest.mark.parametrize("name", ["a.txt", "a.jpg", "a.jpeg", "a.png", "a.pdf"])
 def test_accepts_allowed_extensions(name):
-    assert validate_extension(name) == name[-4:]
+    assert validate_extension(name) == name[name.rindex(".") :]
 
 
-@pytest.mark.parametrize("name", ["PHOTO.JPG", "Video.MP4", "NOTES.TXT", "PROGRAM.EXE", "a.JpG"])
+@pytest.mark.parametrize(
+    "name", ["PHOTO.JPG", "scan.JPEG", "NOTES.TXT", "Doc.PDF", "pic.PnG", "a.JpG"]
+)
 def test_extension_matching_is_case_insensitive(name):
     assert validate_extension(name) == normalize_extension(name)
     assert normalize_extension(name) == name[name.rindex(".") :].lower()
@@ -25,7 +28,22 @@ def test_extension_matching_is_case_insensitive(name):
 
 @pytest.mark.parametrize(
     "name",
-    ["a.pdf", "a.docx", "a.zip", "a.png", "a.py", "a.sh", "a.bat", "noext", "a.", ".txt.bak"],
+    [
+        "a.exe",
+        "A.EXE",
+        "a.mp4",
+        "a.docx",
+        "a.zip",
+        "a.py",
+        "a.sh",
+        "a.bat",
+        "a.lnk",
+        "a.desktop",
+        "noext",
+        "a.",
+        ".txt.bak",
+        "photo.jpg.exe",
+    ],
 )
 def test_rejects_unsupported_extensions(name):
     with pytest.raises(HandOffError) as e:
@@ -119,3 +137,19 @@ def test_rejects_non_string_filename():
 def test_overlong_name_is_measured_in_utf8_bytes():
     with pytest.raises(HandOffError):
         validate_filename("é" * 200 + ".txt")  # 400 bytes
+
+
+@pytest.mark.parametrize(
+    "head",
+    [b"MZ\x90\x00", b"MZ", b"\x7fELF\x02\x01"],
+)
+def test_detects_windows_and_linux_executables_by_content(head):
+    assert looks_executable(head)
+
+
+@pytest.mark.parametrize(
+    "head",
+    [b"", b"M", b"hello world", b"\xff\xd8\xff\xe0", b"\x89PNG\r\n\x1a\n", b"%PDF-1.7", b"mz"],
+)
+def test_ordinary_content_is_not_flagged_as_executable(head):
+    assert not looks_executable(head)

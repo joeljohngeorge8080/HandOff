@@ -73,6 +73,16 @@ class ConnectionManager:
         self._active: ActivePeer | None = None
         self._monitor: PeriodicTask | None = None
         self.on_offline: Callable[[], None] | None = None
+        self._published: dict[str, Any] | None = None
+
+    def publish_if_changed(self) -> None:
+        """Push `connection.changed` to the UI when the visible connection state changed."""
+        snap = self.snapshot()
+        with self._lock:
+            if snap == self._published:
+                return
+            self._published = snap
+        self.core.events.publish("connection.changed", snap)
 
     # ----- lifecycle ---------------------------------------------------------------------
 
@@ -156,6 +166,12 @@ class ConnectionManager:
     # ----- outbound connect (user clicked Connect) ----------------------------------------
 
     def connect(self, device_id: str) -> dict[str, Any]:
+        try:
+            return self._connect(device_id)
+        finally:
+            self.publish_if_changed()
+
+    def _connect(self, device_id: str) -> dict[str, Any]:
         with self._lock:
             peer = self.discovery.get(device_id)
             if peer is None:
@@ -277,6 +293,7 @@ class ConnectionManager:
                     s, AuditEvent.DEVICE_CONNECTED, f"{name} connected.", device_id=device_id
                 )
             self._active = ActivePeer(device_id, name, address, port, public_key)
+        self.publish_if_changed()
         return {
             "connection_id": f"conn_{uuid.uuid4().hex[:12]}",
             "device_id": self.core.identity.device_id,
@@ -288,6 +305,12 @@ class ConnectionManager:
 
     def allow_inbound_transfer(self, device_id: str) -> None:
         """A trusted device may send if it is the connected peer, or if no peer is connected."""
+        try:
+            self._allow_inbound_transfer(device_id)
+        finally:
+            self.publish_if_changed()
+
+    def _allow_inbound_transfer(self, device_id: str) -> None:
         with self._lock:
             active = self._active
             if active and active.device_id != device_id and active.status == "connected":
@@ -310,6 +333,7 @@ class ConnectionManager:
         with self._lock:
             if self._active and self._active.device_id == device_id:
                 self._active = None
+        self.publish_if_changed()
         with self.core.db.session() as s:
             row = DeviceRepository(s).get_by_device_id(device_id)
             if row:
@@ -358,6 +382,7 @@ class ConnectionManager:
                     a.status = "offline"
                     self._record_status(a, "offline", AuditEvent.DEVICE_OFFLINE, "went offline")
                     callback = self.on_offline
+        self.publish_if_changed()
         if callback:
             callback()
 

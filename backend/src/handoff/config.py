@@ -1,8 +1,9 @@
-"""Phase-1 constants. Limits here are contract values from docs/ (ADR-017, ADR-018)."""
+"""Constants. Limits here are contract values from docs/ (ADR-017, ADR-055)."""
 
 from __future__ import annotations
 
-ALLOWED_EXTENSIONS: frozenset[str] = frozenset({".txt", ".jpg", ".mp4", ".exe"})
+# ADR-055 (Phase 2): .mp4 and .exe are no longer accepted.
+ALLOWED_EXTENSIONS: frozenset[str] = frozenset({".txt", ".jpg", ".jpeg", ".png", ".pdf"})
 
 # ADR-017: individual files are limited to 50 MB; a file of exactly 50 MB is accepted.
 MAX_FILE_SIZE: int = 50 * 1024 * 1024

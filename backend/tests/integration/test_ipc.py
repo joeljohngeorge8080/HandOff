@@ -29,7 +29,7 @@ def call(d, action, payload=None, req_id=1):
 
 def test_files_add_list_get_delete_flow(d, make_file):
     good = make_file("photo.jpg", b"jpeg")
-    bad = make_file("doc.pdf", b"pdf")
+    bad = make_file("setup.exe", b"exe")
     r = call(d, "files.add", {"paths": [str(good), str(bad), str(good.parent / "nope.txt")]})
     assert r["id"] == 1
     assert [f["name"] for f in r["result"]["added"]] == ["photo.jpg"]
@@ -103,46 +103,85 @@ def test_unexpected_errors_are_masked_and_do_not_leak_internals(d, core, monkeyp
 # ---------------------------------------------------------------- receive mode / settings
 
 
-def test_receive_mode_defaults_off_and_can_be_enabled_without_a_peer(d):
-    assert call(d, "receive_mode.get")["result"] == {"enabled": False}
-    assert call(d, "receive_mode.set", {"enabled": True})["result"] == {"enabled": True}
-    assert call(d, "receive_mode.get")["result"] == {"enabled": True}
+def test_receive_mode_is_gone(d):
+    """ADR-055: Receive Mode was removed; its IPC actions no longer exist."""
+    for action in ("receive_mode.get", "receive_mode.set"):
+        assert call(d, action, {"enabled": True})["error"]["code"] == "INVALID_REQUEST"
 
 
-def test_receive_mode_persists_across_restart(paths):
+def test_receive_directory_defaults_to_the_desktop(d, isolated_desktop):
+    s = call(d, "settings.get")["result"]["settings"]
+    assert s["receive_directory"] == str(isolated_desktop)
+
+
+def test_receive_directory_can_be_changed_and_is_audited(d, core, tmp_path):
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    r = call(d, "settings.set", {"key": "receive_directory", "value": str(inbox)})
+    assert r["result"]["settings"]["receive_directory"] == str(inbox.resolve())
+    with core.db.session() as s:
+        (row,) = AuditRepository(s).list(event_type=AuditEvent.RECEIVE_DIRECTORY_CHANGED.value)
+    assert json.loads(row.meta)["new_value"] == str(inbox.resolve())
+    # setting the same folder again is not a change
+    call(d, "settings.set", {"key": "receive_directory", "value": str(inbox)})
+    with core.db.session() as s:
+        assert len(AuditRepository(s).list(event_type="RECEIVE_DIRECTORY_CHANGED")) == 1
+
+
+def test_receive_directory_persists_across_restart(paths, tmp_path):
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
     c = Core(paths, hostname="T")
     c.start()
-    Dispatcher(c).handle_line(
-        json.dumps({"id": 1, "action": "receive_mode.set", "payload": {"enabled": True}})
-    )
+    c.settings.set_receive_directory(str(inbox))
     c.close()
     c2 = Core(paths, hostname="T")
     c2.start()
-    assert c2.settings.get_receive_mode() is True
+    assert c2.settings.receive_directory() == inbox.resolve()
     c2.close()
 
 
-@pytest.mark.parametrize("value", ["true", 1, 0, None, "on", []])
-def test_receive_mode_requires_a_real_boolean(d, value):
-    assert call(d, "receive_mode.set", {"enabled": value})["error"]["code"] == "INVALID_REQUEST"
-    assert call(d, "receive_mode.get")["result"] == {"enabled": False}
+@pytest.mark.parametrize(
+    "value",
+    ["relative/dir", "", "/definitely/not/here", "../x", 5, None, ["/not-a-string"], "\x00"],
+)
+def test_invalid_receive_directories_are_rejected_and_the_old_one_kept(d, core, value):
+    before = core.settings.receive_directory()
+    r = call(d, "settings.set", {"key": "receive_directory", "value": value})
+    assert r["error"]["code"] == "INVALID_PATH"
+    assert core.settings.receive_directory() == before
 
 
-def test_receive_mode_changes_are_audited_with_old_and_new_values(d, core):
-    call(d, "receive_mode.set", {"enabled": True})
-    call(d, "receive_mode.set", {"enabled": True})  # no change, no event
-    call(d, "receive_mode.set", {"enabled": False})
-    with core.db.session() as s:
-        rows = AuditRepository(s).list(event_type=AuditEvent.RECEIVE_MODE_CHANGED.value)
-    assert [json.loads(r.meta) for r in reversed(rows)] == [
-        {"old_value": False, "new_value": True},
-        {"old_value": True, "new_value": False},
-    ]
+def test_a_file_is_not_a_valid_receive_directory(d, make_file):
+    f = make_file("a.txt")
+    r = call(d, "settings.set", {"key": "receive_directory", "value": str(f)})
+    assert r["error"]["code"] == "INVALID_PATH"
+
+
+def test_the_receive_directory_cannot_be_inside_handoffs_own_data(d, core):
+    for inside in (core.paths.root, core.paths.keys_dir, core.paths.files_dir):
+        r = call(d, "settings.set", {"key": "receive_directory", "value": str(inside)})
+        assert r["error"]["code"] == "INVALID_PATH"
+
+
+def test_an_obsolete_receive_mode_row_is_kept_but_hidden_and_ignored(paths):
+    c = Core(paths, hostname="T")
+    c.start()
+    from handoff.db.repositories import SettingsRepository
+
+    with c.db.session() as s:
+        SettingsRepository(s).set("receive_mode", False)  # as left by an older version
+    c.close()
+    c2 = Core(paths, hostname="T")
+    c2.start()
+    assert "receive_mode" not in c2.settings.get_all()
+    assert c2.settings.get("receive_mode") is False  # not deleted (no silent data loss)
+    c2.close()
 
 
 def test_settings_defaults_and_device_name_is_derived_from_the_os(d):
     s = call(d, "settings.get")["result"]["settings"]
-    assert s["receive_mode"] is False
+    assert "receive_mode" not in s
     assert s["history_retention"] == 90
     assert s["device_name"] == "Test-Laptop"
     assert "schema_version" not in s
@@ -214,7 +253,7 @@ def test_partially_completed_jobs_show_which_files_failed(d, core):
 def test_status_snapshot_shape(d, core):
     snap = call(d, "status.snapshot")["result"]
     assert snap["device"] == {"device_id": core.identity.device_id, "device_name": "Test-Laptop"}
-    assert snap["receive_mode"] is False
+    assert "receive_mode" not in snap and snap["receive_directory"]
     assert snap["connection"] == {"connected": False, "device": None}
     assert snap["active_transfer"] is None and snap["recent_history"] == []
 
@@ -297,7 +336,7 @@ def test_the_real_sidecar_process_speaks_the_ipc_protocol(tmp_path):
         big = rpc("x" * (MAX_IPC_LINE_BYTES + 5000))
         assert big["error"]["code"] == "INVALID_REQUEST"
         # the stream stays in sync after an oversized line
-        assert rpc(json.dumps({"id": 3, "action": "receive_mode.get"}))["id"] == 3
+        assert rpc(json.dumps({"id": 3, "action": "settings.get"}))["id"] == 3
     finally:
         proc.stdin.close()
         assert proc.wait(timeout=15) == 0

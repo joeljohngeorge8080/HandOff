@@ -96,7 +96,7 @@ def test_naive_datetimes_are_refused(core):
 
 def test_datetimes_round_trip_as_utc(core):
     with core.db.session() as s:
-        row = s.get(Setting, "receive_mode")
+        row = s.get(Setting, "history_retention")
         assert row.updated_at.tzinfo is not None
         assert row.updated_at.utcoffset() == timedelta(0)
 

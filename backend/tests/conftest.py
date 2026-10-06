@@ -8,6 +8,16 @@ from handoff.core import Core
 from handoff.paths import AppPaths
 
 
+@pytest.fixture(autouse=True)
+def isolated_desktop(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """The OS Desktop is the default receive folder (ADR-055): never let a test write to it."""
+    desktop = tmp_path_factory.mktemp("Desktop")
+    monkeypatch.setattr("platformdirs.user_desktop_dir", lambda: str(desktop))
+    return desktop
+
+
 @pytest.fixture
 def paths(tmp_path: Path) -> AppPaths:
     """Isolated app-data directory. Tests never touch a real HandOff install."""

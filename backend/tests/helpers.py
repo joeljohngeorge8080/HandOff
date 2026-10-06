@@ -12,6 +12,7 @@ from pathlib import Path
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi.testclient import TestClient
 
+import handoff.transfer.sender as sender_mod
 from handoff.core import Core
 from handoff.db.models import Transfer, TransferFile, utcnow
 from handoff.db.repositories import DeviceRepository, TransferRepository
@@ -117,6 +118,9 @@ class PeerHarness:
     def __init__(self, tmp_path: Path) -> None:
         self.core = Core(AppPaths(tmp_path / "receiver"), hostname="Receiver")
         self.core.start()
+        self.inbox = tmp_path / "receiver-inbox"
+        self.inbox.mkdir()
+        self.core.settings.set_receive_directory(str(self.inbox))
         self.mono = 1000.0
         self.limiter = FailureLimiter()
         self.client = PeerClient(self.core.identity)
@@ -216,6 +220,9 @@ class TestNode:
         self.stopped = False
         self.core = Core(self.paths, hostname=self.name)
         self.core.start()
+        self.inbox = self.paths.root.parent / f"{self.name}-inbox"
+        self.inbox.mkdir(exist_ok=True)
+        self.core.settings.set_receive_directory(str(self.inbox))
         self.network = Network(
             self.core,
             NetworkConfig(host="127.0.0.1", port=0, discovery=self.discovery, **self.net_kwargs),
@@ -258,6 +265,10 @@ class TestNode:
         (src / name).write_bytes(data)
         return self.ok("files.add", {"paths": [str(src / name)]})["added"][0]["id"]
 
+    def received_files(self) -> dict[str, bytes]:
+        """Files written to this node's receive folder, by name."""
+        return {p.name: p.read_bytes() for p in self.inbox.iterdir() if p.is_file()}
+
     def transfer(self, tid: str) -> dict:
         return self.ok("transfer.status", {"transfer_id": tid})["transfer"]
 
@@ -293,3 +304,20 @@ class Gate:
     def __init__(self) -> None:
         self.started = threading.Event()
         self.release = threading.Event()
+
+
+def pause_upload(monkeypatch, gate, *, then_raise=None):
+    """Hold the sender's upload after its first chunk until the test releases the gate."""
+    monkeypatch.setattr(sender_mod, "IO_CHUNK_SIZE", 1024)
+    orig = sender_mod.SenderService._chunks
+
+    def slow(self, path, tid):
+        for i, chunk in enumerate(orig(self, path, tid)):
+            yield chunk
+            if i == 0:
+                gate.started.set()
+                assert gate.release.wait(30)
+                if then_raise:
+                    raise then_raise
+
+    monkeypatch.setattr(sender_mod.SenderService, "_chunks", slow)

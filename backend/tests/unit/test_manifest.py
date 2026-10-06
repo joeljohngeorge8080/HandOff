@@ -71,7 +71,7 @@ def test_traversal_names_are_rejected_with_a_path_code(name):
 
 def test_unsupported_extension_and_oversize_use_specific_codes():
     with pytest.raises(HandOffError) as e:
-        Manifest.from_dict(good(filename="a.pdf"))
+        Manifest.from_dict(good(filename="a.exe"))
     assert e.value.code == "FILE_TYPE_NOT_SUPPORTED"
     with pytest.raises(HandOffError) as e:
         Manifest.from_dict(good(size=MAX_FILE_SIZE + 1))

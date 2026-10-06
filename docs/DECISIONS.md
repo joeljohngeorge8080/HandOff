@@ -256,7 +256,7 @@ would introduce unnecessary infrastructure and complexity.
 
 # ADR-011: Bidirectional Devices
 
-**Status:** Accepted
+**Status:** Partly superseded by ADR-054 / ADR-055 (Receive Mode removed)
 
 **Decision:** Every HandOff installation can both send and receive files.
 
@@ -277,7 +277,7 @@ Both devices run the same application.
 
 # ADR-012: Receive Mode as a Toggle
 
-**Status:** Accepted
+**Status:** Superseded by ADR-055
 
 **Decision:** Receive Mode is controlled through a toggle.
 
@@ -296,7 +296,7 @@ This provides an explicit user-controlled receiving state without requiring a pe
 
 # ADR-013: Automatic Receiving
 
-**Status:** Accepted
+**Status:** Amended by ADR-055 (no Receive Mode gate; destination is receiver-chosen)
 
 **Decision:** When Receive Mode is enabled and a trusted connected device sends a valid transfer, the receiving device automatically accepts it.
 
@@ -393,7 +393,7 @@ Large-file optimization, streaming architecture, resumable transfers, and advanc
 
 # ADR-018: Supported File Types
 
-**Status:** Accepted
+**Status:** Superseded by ADR-055 (new type list)
 
 **Decision:** Phase 1 supports:
 
@@ -464,7 +464,7 @@ Collision handling is responsible for creating a safe alternative when necessary
 
 # ADR-022: Separate Application Storage
 
-**Status:** Accepted
+**Status:** Amended by ADR-055 (received files go to the receiver-chosen folder)
 
 **Decision:** HandOff maintains its own application-managed storage.
 
@@ -486,7 +486,7 @@ HandOff should not manipulate arbitrary user filesystem locations beyond explici
 
 # ADR-023: Logical File Deletion
 
-**Status:** Accepted
+**Status:** Amended by ADR-054 (no gallery; dropped copies are deleted after transfer)
 
 **Decision:** Deleting a file from the HandOff gallery does not immediately destroy historical records.
 
@@ -656,7 +656,7 @@ Cloud infrastructure would add complexity without contributing to the MVP's core
 
 # ADR-033: Computer Vision Deferred to Phase 2
 
-**Status:** Accepted
+**Status:** Amended by ADR-054 (computer vision is now Phase 3)
 
 **Decision:** Phase 1 does not depend on computer vision.
 
@@ -710,7 +710,7 @@ This also reduces:
 
 # ADR-035: Phase-Based Development
 
-**Status:** Accepted
+**Status:** Amended by ADR-054 (Phase 2 is the edge UX; computer vision is Phase 3)
 
 **Decision:** HandOff will be developed incrementally.
 
@@ -1148,6 +1148,8 @@ The documentation did not name these items; they are fixed here so implementatio
 | Cryptography | `cryptography` (Ed25519 identity keys, self-signed TLS certificate) |
 | Python tooling | uv, ruff, mypy, pytest, PyInstaller (sidecar bundle) |
 
+**Phase 2 note (ADR-045):** mechanisms 4 (Receive Mode), 5 (collisions on received files: now real filenames in the receiver-chosen folder), 9 (readiness check) and 13 (received files live outside the data directory) are amended by ADR-054/055.
+
 ### Mechanisms
 
 1. **IPC:** JSON-lines `{id, action, payload}` → `{id, result | error}` over the sidecar's stdin/stdout. The UI polls a `status.snapshot` action about once per second for connection, Receive Mode, active-transfer progress and recent history. The UI never calls peers directly.
@@ -1167,6 +1169,52 @@ The documentation did not name these items; they are fixed here so implementatio
 ### Rationale
 
 Request signatures are fully testable and do not depend on uvicorn exposing client certificates to the application layer, while still satisfying the requirement that identity must be verified in addition to encryption.
+
+---
+
+# ADR-054: Edge Transfer UX (Phase 2)
+
+**Status:** Accepted
+
+**Supersedes / amends (ADR-045):** ADR-011 (Send / Receive Mode), ADR-012, ADR-023 (gallery deletion), ADR-033 and ADR-035 (Phase 2 is no longer computer vision), and the gallery, Send button and Receive Mode parts of REQUIREMENTS §2, §7, FR-005..FR-008, FR-017..FR-023, FR-036, FR-037.
+
+**Decision:** Phase 2 replaces the gallery window with an *edge transfer* interaction.
+
+1. HandOff is a thin, borderless, always-on-top strip attached to the **right edge** of the screen. Its width is a DPI-aware logical size of about 2 cm (never a hard-coded physical measurement). Idle, it is nearly invisible and click-through.
+2. The Send interaction is **drag a file from the OS to the right edge, then release**. Native OS drag-and-drop (mouse) is the only input in this phase. There is no camera, OpenCV, MediaPipe or gesture code.
+3. A drop is sent **automatically to the one connected trusted peer** (ADR-046). There is no device-selection dialog. With no connected peer the drop is rejected ("No HandOff device connected") and nothing is queued.
+4. The gallery, the Send button and the Receive Mode toggle are removed. Device discovery, connecting, the destination folder and history live in a compact panel that opens when the edge is clicked.
+5. The UI is split into an **input layer** (OS drag-and-drop, edge proximity) that emits the canonical ADR-052 semantic events, an **explicit edge state machine**, and an **animation layer** that reacts only to state. A later computer-vision input becomes one more adapter feeding the same events, state machine and animations.
+6. The edge never reports success before the backend reports a terminal state. Animations follow real transfer state, which the core pushes to the UI as events (polling remains a slow fallback).
+7. **Computer vision moves from "Phase 2" to "Phase 3".** ADR-033 and ADR-035 keep their text; only the phase label changes. The CV integration boundary (API §38-§42, `cv/events.py`) stays defined and disabled.
+
+### Consequences
+
+- The transfer engine, trust model, manifest, ZIP, SHA-256, state machine, audit and history are unchanged.
+- Dropped files still go through `files.import` (copy and hash, ADR-049) and `transfer.create` by file ID (ADR-050). The managed copy of a dropped file is logically deleted once its transfer reaches a terminal state. History and audit rows remain.
+- ADR-014 ("sender selects the destination device") is satisfied by ADR-046: the destination is the connected peer and the UI always shows it.
+- Wayland sessions cannot position a global always-on-top strip. HandOff runs through XWayland there (documented limitation).
+
+---
+
+# ADR-055: File Types, Receive Mode Removal and Receiver-Chosen Destination
+
+**Status:** Accepted
+
+**Supersedes / amends (ADR-045):** ADR-013 (the gate for automatic receiving changes), ADR-018 (file types), ADR-022 and ADR-041 "Filesystem Isolation" (where received files are written), ADR-053 mechanisms 4, 5, 9 and 13, SECURITY §19 / §21 / §29 / §33 / §55 #7.
+
+**Decisions:**
+
+1. **File types.** Allowed extensions are `.txt .jpg .jpeg .png .pdf`, matched case-insensitively, on both sender and receiver. `.mp4` and `.exe` are no longer accepted. Files whose content starts with a PE (`MZ`) or ELF header are rejected even if renamed. The 50 MB limit (ADR-017) is unchanged. Directories, symlinks, shortcuts and non-regular files are rejected. If any item in a drop is invalid the whole drop is rejected.
+2. **Receive Mode is removed.** There is no toggle, no `receive_mode` API field and no `GET /api/v1/receive-mode`. A trusted connected peer is always able to send. The trust, identity and connected-peer checks remain the gate. The `receive_mode` settings row is **obsolete**: it is left in existing databases, ignored, and never deleted. The error code `RECEIVE_MODE_DISABLED` is retired.
+3. **Receiver-chosen destination.** Received files are written to a **receiver-local folder**, the `receive_directory` setting. If unset, it is the OS Desktop folder (resolved through the OS, never a hard-coded username). The user changes it at any time with the native folder picker. There is no per-transfer prompt, because the receiving side of a transfer is one synchronous request (API §22). The sender can never specify or see a path on the receiver.
+4. **Destination safety.** The folder must be an absolute path to an existing, writable directory, validated by the receiver itself when the setting is saved and again before each transfer (otherwise `RECEIVER_NOT_READY`). Final names are made unique with `name(1).ext`, `name(2).ext`, and so on, reserved atomically (exclusive create), so existing files are never overwritten. Each file's SHA-256 is verified again while it is copied into the destination.
+5. **Received files are no longer managed storage.** They get no `files` row; history lives in `transfers` and `transfer_files` (`file_id` is NULL). Because they live outside the app-data directory, they **survive uninstall** (ADR-043 covers HandOff-managed data only). Files received under Phase 1 remain in `received/`.
+6. **Breaking peer-API change.** The type set and the removal of Receive Mode change the peer contract. Both peers must run HandOff 0.2.x or later.
+
+### Rationale
+
+The user decides where their own files land, on their own machine, through a native picker. Letting the receiver choose, rather than the sender, keeps the rule "never trust a network-supplied path" intact.
 
 ---
 

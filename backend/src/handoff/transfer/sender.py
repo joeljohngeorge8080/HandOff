@@ -11,7 +11,7 @@ import logging
 import threading
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -47,6 +47,8 @@ class SenderService:
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="transfer")
         self._abort = threading.Event()
         self._abort_reason: HandOffError | None = None
+        # Called with the transfer id once a job is terminal (e.g. to delete dropped copies).
+        self.on_finished: list[Callable[[str], None]] = []
 
     def stop(self) -> None:
         self.abort_active("DEVICE_OFFLINE", "HandOff is shutting down.")
@@ -67,7 +69,7 @@ class SenderService:
         with self.core.db.session() as s:
             if TransferRepository(s).get_active() is not None:
                 raise HandOffError("INVALID_STATE", "Another transfer is already active.")
-        self._require_receiver_ready(peer)
+        self._require_reachable(peer)
 
         tid = f"tr_{uuid.uuid4().hex}"
         entries, manifest = self._prepare(tid, ids)
@@ -93,6 +95,7 @@ class SenderService:
                 device_id=peer.device_id, transfer_id=tid,
                 metadata={"file_count": len(rows), "total_size": manifest.total_size},
             )  # fmt: skip
+        self.core.events.transfer_changed(tid)
         self._executor.submit(self._run, tid, manifest, entries, peer)
         return must(self.core.history.get(tid), "transfer")
 
@@ -112,27 +115,14 @@ class SenderService:
             )
         return list(file_ids)
 
-    def _require_receiver_ready(self, peer: ActivePeer) -> None:
-        """FR-023: find out before sending whether the other device is accepting files."""
+    def _require_reachable(self, peer: ActivePeer) -> None:
+        """Fail fast, before any transfer record exists, if the peer does not answer."""
         address, port = peer.endpoint()
         resp = self.client.request(
             address, port, "GET", "/api/v1/device", expected_key=peer.public_key
         )
         if resp.status_code != 200:
             raise error_from_response(resp)
-        try:
-            accepting = resp.json()["receive_mode"] is True
-        except (ValueError, KeyError, TypeError) as exc:
-            raise HandOffError("NETWORK_ERROR", "Unexpected response from the device.") from exc
-        if not accepting:
-            with self.core.db.session() as s:
-                record_event(
-                    s, AuditEvent.TRANSFER_REJECTED, f"{peer.device_name} is not accepting files.",
-                    device_id=peer.device_id, metadata={"code": "RECEIVE_MODE_DISABLED"},
-                )  # fmt: skip
-            raise HandOffError(
-                "RECEIVE_MODE_DISABLED", f"{peer.device_name} is not accepting files."
-            )
 
     def _prepare(self, tid: str, ids: list[str]) -> tuple[list[tuple[Path, str]], Manifest]:
         files: list[File] = []
@@ -187,6 +177,12 @@ class SenderService:
         finally:
             archive.unlink(missing_ok=True)
             self._ensure_terminal(tid)
+            self.core.events.transfer_changed(tid)
+            for callback in list(self.on_finished):
+                try:
+                    callback(tid)
+                except Exception:
+                    log.exception("Post-transfer cleanup failed for %s", tid)
 
     def _chunks(self, path: Path, tid: str) -> Iterator[bytes]:
         sent, last = 0, 0.0
@@ -238,12 +234,14 @@ class SenderService:
                     s, AuditEvent.TRANSFER_STARTED, "Sending files.",
                     device_id=t.destination_device_id, transfer_id=tid,
                 )  # fmt: skip
+        self.core.events.transfer_changed(tid)
 
     def _progress(self, tid: str, sent: int) -> None:
         with self.core.db.session() as s:
             t = TransferRepository(s).get(tid)
             if t is not None and t.status == TransferStatus.TRANSFERRING.value:
                 t.bytes_transferred = sent
+        self.core.events.transfer_changed(tid, throttle=True)
 
     def _finish(self, tid: str, resp: httpx.Response) -> None:
         if resp.status_code != 200:

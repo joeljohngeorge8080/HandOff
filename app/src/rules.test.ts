@@ -1,44 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { canSend, canSwitchPeer, formatBytes, sendBlockedReason } from "./rules";
-import type { Connection, Transfer } from "./types";
+import { canSwitchPeer, connectedPeerName, formatBytes, isFinished, shortenPath } from "./rules";
+import type { Transfer } from "./types";
 
-const peer = { device_id: "d1", device_name: "Aaron", address: "10.0.0.2", port: 8765, status: "connected" };
-const connected: Connection = { connected: true, device: peer };
-const disconnected: Connection = { connected: false, device: null };
-const active = { transfer_id: "t", status: "transferring" } as Transfer;
-
-describe("Send enabled rule", () => {
-  it("is enabled with a selection and a connected peer", () => {
-    expect(canSend({ selectedCount: 1, connection: connected, activeTransfer: null })).toBe(true);
-  });
-  it("is disabled with no selection", () => {
-    const ctx = { selectedCount: 0, connection: connected, activeTransfer: null };
-    expect(canSend(ctx)).toBe(false);
-    expect(sendBlockedReason(ctx)).toMatch(/select/i);
-  });
-  it("is disabled with no peer", () => {
-    const ctx = { selectedCount: 2, connection: disconnected, activeTransfer: null };
-    expect(canSend(ctx)).toBe(false);
-    expect(sendBlockedReason(ctx)).toMatch(/connect/i);
-  });
-  it("is disabled when the peer went offline", () => {
-    const offline: Connection = { connected: false, device: { ...peer, status: "offline" } };
-    expect(canSend({ selectedCount: 1, connection: offline, activeTransfer: null })).toBe(false);
-  });
-  it("is disabled while a transfer is active", () => {
-    const ctx = { selectedCount: 1, connection: connected, activeTransfer: active };
-    expect(canSend(ctx)).toBe(false);
-    expect(sendBlockedReason(ctx)).toMatch(/progress/i);
-  });
-  it("has no blocked reason when enabled", () => {
-    expect(sendBlockedReason({ selectedCount: 1, connection: connected, activeTransfer: null })).toBe("");
+describe("canSwitchPeer (ADR-047)", () => {
+  it("is blocked during an active transfer and allowed otherwise", () => {
+    expect(canSwitchPeer(null)).toBe(true);
+    expect(canSwitchPeer({ status: "transferring" } as Transfer)).toBe(false);
   });
 });
 
-describe("peer switching (ADR-047)", () => {
-  it("is blocked during an active transfer only", () => {
-    expect(canSwitchPeer(active)).toBe(false);
-    expect(canSwitchPeer(null)).toBe(true);
+describe("isFinished", () => {
+  it("recognises the three terminal states only", () => {
+    for (const s of ["completed", "failed", "partially_completed"]) expect(isFinished(s)).toBe(true);
+    for (const s of ["created", "validating", "accepted", "transferring", ""]) expect(isFinished(s)).toBe(false);
   });
 });
 
@@ -48,5 +22,29 @@ describe("formatBytes", () => {
     expect(formatBytes(1023)).toBe("1023 B");
     expect(formatBytes(1536)).toBe("1.5 KB");
     expect(formatBytes(52_428_800)).toBe("50 MB");
+  });
+});
+
+describe("shortenPath", () => {
+  it("leaves short paths alone and keeps both ends of long ones", () => {
+    expect(shortenPath("/home/me/Desktop")).toBe("/home/me/Desktop");
+    const long = "/home/someone/Documents/Projects/Client/Deliverables/2026/Final";
+    const s = shortenPath(long, 30);
+    expect(s).toHaveLength(30);
+    expect(s.startsWith("/home/")).toBe(true);
+    expect(s.endsWith("Final")).toBe(true);
+    expect(s).toContain("…");
+  });
+  it("never produces something longer than the limit", () => {
+    for (const max of [10, 20, 44]) expect(shortenPath("x".repeat(200), max).length).toBeLessThanOrEqual(max);
+  });
+});
+
+describe("connectedPeerName", () => {
+  it("is null unless connected with a device", () => {
+    expect(connectedPeerName({ connected: false, device: null })).toBeNull();
+    expect(connectedPeerName({ connected: false, device: { device_name: "A" } })).toBeNull(); // offline
+    expect(connectedPeerName({ connected: true, device: { device_name: "A" } })).toBe("A");
+    expect(connectedPeerName({ connected: true, device: null })).toBeNull();
   });
 });

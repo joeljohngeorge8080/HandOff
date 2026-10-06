@@ -1,5 +1,9 @@
 # Architecture
 
+> **Phase 2 amendment (ADR-054 / ADR-055).** §2 goal 8, §8 (Gallery), §16 (Receive Mode), §17 (Send Flow), §19, §20 and §25 are superseded by the edge design. UI layers: **input adapters** (OS drag-and-drop, edge proximity; later computer vision) → typed **interaction bus** of ADR-052 events → pure **edge state machine** → **animation layer** (GPU transform/opacity only; no loops while idle). Backend flow: `drop.send` → `files.import` → `transfer.create` (existing sender) → peer (existing receiver) → receiver-chosen folder. The core pushes `transfer.updated` / `connection.changed` events over the stdout channel. Window: a single borderless always-on-top `edge` window at the right edge of the monitor under the cursor, click-through while idle. Computer vision is Phase 3.
+>
+> Edge window geometry (`src-tauri/src/edge`): one window `edge`, flush against the right edge of a monitor whose right side is an outer edge, sized per mode in logical pixels scaled per monitor (Idle ~6 px click-through hairline, Armed ~2 cm drop strip, Panel 360 px, Stage 420 px click-through for animations). A pointer watcher (~7-14 Hz, event-on-change) arms the strip only while a mouse button is held near the edge (an OS drag), or after a short rest on the outermost pixels (the handle for the panel). Linux needs X11/XWayland (forced when `WAYLAND_DISPLAY` is set) and a compositor for transparency; without one the strip renders opaque. Windows button state uses `GetAsyncKeyState`.
+
 ## 1. Overview
 
 This project is a desktop application for **gesture-assisted local file transfer between nearby computers**.

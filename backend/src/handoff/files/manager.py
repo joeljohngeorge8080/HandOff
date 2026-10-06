@@ -6,6 +6,7 @@ import hashlib
 import logging
 import mimetypes
 import os
+import stat
 import uuid
 from pathlib import Path
 from typing import Any
@@ -17,7 +18,12 @@ from handoff.db.models import File, iso, utcnow
 from handoff.db.repositories import FileRepository
 from handoff.errors import HandOffError
 from handoff.files.naming import unique_display_name
-from handoff.files.validation import validate_extension, validate_filename, validate_size
+from handoff.files.validation import (
+    reject_executable_content,
+    validate_extension,
+    validate_filename,
+    validate_size,
+)
 from handoff.paths import AppPaths
 
 log = logging.getLogger(__name__)
@@ -45,12 +51,9 @@ class FileManager:
         src = Path(source)
         name = src.name
         try:
-            validate_filename(name)
-            ext = validate_extension(name)
-            size = self._stat_regular_file(src)
-            validate_size(size, name)
+            name, ext, _ = self.validate_source(src)
         except HandOffError as exc:
-            self._audit_rejection(exc, name)
+            self.audit_rejection(exc, name)
             raise
 
         file_id = str(uuid.uuid4())
@@ -97,16 +100,53 @@ class FileManager:
         return result
 
     @staticmethod
-    def _stat_regular_file(src: Path) -> int:
+    def stat_regular_file(src: Path) -> int:
+        """Size of a regular file. Directories, symlinks/shortcuts and devices are rejected.
+
+        Uses lstat so a symlink is never followed (it could point anywhere).
+        """
         try:
-            st = src.stat()
+            st = src.lstat()
         except FileNotFoundError as exc:
-            raise HandOffError("FILE_NOT_FOUND", "The selected file no longer exists.") from exc
+            raise HandOffError(
+                "FILE_NOT_FOUND", "The selected file no longer exists.", {"reason": "missing"}
+            ) from exc
         except OSError as exc:
             raise HandOffError("FILE_STORAGE_ERROR", "The selected file cannot be read.") from exc
-        if not src.is_file():
-            raise HandOffError("INVALID_FILE", "Only regular files can be added.")
+        if stat.S_ISLNK(st.st_mode):
+            raise HandOffError(
+                "INVALID_FILE", "Shortcuts and links are not supported.", {"reason": "symlink"}
+            )
+        if stat.S_ISDIR(st.st_mode):
+            raise HandOffError(
+                "INVALID_FILE", "Folders are not supported.", {"reason": "directory"}
+            )
+        if not stat.S_ISREG(st.st_mode):
+            raise HandOffError(
+                "INVALID_FILE", "Only regular files can be added.", {"reason": "not_regular"}
+            )
         return st.st_size
+
+    @staticmethod
+    def read_head(src: Path, n: int = 4) -> bytes:
+        try:
+            with src.open("rb") as f:
+                return f.read(n)
+        except OSError as exc:
+            raise HandOffError("FILE_STORAGE_ERROR", "The selected file cannot be read.") from exc
+
+    def validate_source(self, source: str | os.PathLike[str]) -> tuple[str, str, int]:
+        """All pre-copy checks. Returns (name, extension, size) or raises HandOffError."""
+        src = Path(source)
+        name = src.name
+        # Look at what the path *is* first, so a folder is reported as a folder rather than
+        # as a file of an unsupported type.
+        size = self.stat_regular_file(src)
+        validate_filename(name)
+        ext = validate_extension(name)
+        validate_size(size, name)
+        reject_executable_content(self.read_head(src), name)
+        return name, ext, size
 
     @staticmethod
     def _copy_and_hash(src: Path, dest: Path, name: str) -> tuple[int, str]:
@@ -128,7 +168,7 @@ class FileManager:
             raise HandOffError("FILE_STORAGE_ERROR", "The file could not be copied.") from exc
         return total, h.hexdigest()
 
-    def _audit_rejection(self, exc: HandOffError, name: str) -> None:
+    def audit_rejection(self, exc: HandOffError, name: str) -> None:
         event = REJECTION_EVENTS.get(exc.code)
         if event is None:
             return

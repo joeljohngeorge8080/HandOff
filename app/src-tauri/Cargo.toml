@@ -17,3 +17,12 @@ tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# Mouse-button state during an OS drag (Tauri exposes the pointer position but not the buttons).
+# `gdk` and `windows-sys` are already part of the dependency tree through tauri/tao; these make
+# them direct dependencies at the versions already locked.
+[target.'cfg(target_os = "linux")'.dependencies]
+gdk = "0.18"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_UI_Input_KeyboardAndMouse"] }

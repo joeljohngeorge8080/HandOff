@@ -1,5 +1,7 @@
 # Security Requirements
 
+> **Phase 2 amendment (ADR-055).** §19 (Receive Mode) is removed: the trust, identity and connected-peer checks are the only gate. §21/§33: allowed types are `.txt .jpg .jpeg .png .pdf`; `.exe` and `.mp4` are rejected, and files with a PE (`MZ`) or ELF header are rejected even when renamed, on sender and receiver. §29/§55 #7 now read: received files are written only into the receiver's own validated `receive_directory` (absolute, existing, writable; default OS Desktop), never to a path supplied by the network. Names are reserved with exclusive create (`name(1).ext`), nothing is overwritten, and each file's SHA-256 is re-verified while it is copied to the destination. New audit event: `RECEIVE_DIRECTORY_CHANGED`. Received files outside app-data are not removed by uninstall.
+
 ## 1. Purpose
 
 This document defines the security model for HandOff Phase 1.

@@ -21,7 +21,7 @@ from pathlib import Path
 
 from handoff.config import IO_CHUNK_SIZE
 from handoff.errors import HandOffError
-from handoff.files.validation import validate_filename
+from handoff.files.validation import looks_executable, validate_filename
 from handoff.transfer.manifest import Manifest, ManifestFile
 
 _FIXED_DATE = (2020, 1, 1, 0, 0, 0)  # no timestamps leaked, no pre-1980 mtime failures
@@ -90,6 +90,14 @@ def _extract_one(zf: zipfile.ZipFile, info: zipfile.ZipInfo, mf: ManifestFile, t
     return h.hexdigest()
 
 
+def _is_executable_file(path: Path) -> bool:
+    try:
+        with path.open("rb") as f:
+            return looks_executable(f.read(4))
+    except OSError:
+        return False
+
+
 def safe_extract(zip_path: Path, dest_dir: Path, manifest: Manifest) -> list[ExtractedFile]:
     """Validate then extract. Raises HandOffError to reject the whole transfer."""
     try:
@@ -131,6 +139,15 @@ def safe_extract(zip_path: Path, dest_dir: Path, manifest: Manifest) -> list[Ext
                         mf, None, False, "INVALID_HASH", "SHA-256 verification failed.", actual
                     )
                 )
+            elif _is_executable_file(target):
+                # A renamed program (e.g. setup.exe -> photo.jpg). Receiver-side check (ADR-055).
+                target.unlink(missing_ok=True)
+                results.append(
+                    ExtractedFile(
+                        mf, None, False, "FILE_TYPE_NOT_SUPPORTED",
+                        "This file looks like an executable program.", actual,
+                    )
+                )  # fmt: skip
             else:
                 results.append(ExtractedFile(mf, target, True, actual_sha256=actual))
         return results

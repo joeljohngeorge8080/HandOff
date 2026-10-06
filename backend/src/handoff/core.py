@@ -10,6 +10,7 @@ from handoff.audit import AuditEvent, record_event
 from handoff.db.engine import Database, open_database
 from handoff.db.repositories import TransferRepository
 from handoff.db.schema import init_schema
+from handoff.events import EventBus
 from handoff.files.manager import FileManager
 from handoff.history import HistoryService
 from handoff.identity import Identity, load_or_create_identity
@@ -28,6 +29,7 @@ class Core:
         self.settings: SettingsService
         self.files: FileManager
         self.history: HistoryService
+        self.events = EventBus()
 
     def start(self) -> None:
         self.paths.ensure()
@@ -41,10 +43,11 @@ class Core:
     def _start_services(self) -> None:
         init_schema(self.db)
         self.identity = load_or_create_identity(self.paths)
-        self.settings = SettingsService(self.db)
+        self.settings = SettingsService(self.db, protected_dirs=(self.paths.root,))
         self.settings.ensure_defaults(self._hostname)
         self.files = FileManager(self.paths, self.db)
         self.history = HistoryService(self.db)
+        self.events.history = self.history
         self._recover_interrupted_transfers()
         self._clear_scratch_dirs()
         with self.db.session() as s:

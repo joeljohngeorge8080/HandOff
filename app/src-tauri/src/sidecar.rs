@@ -26,10 +26,18 @@ pub struct Sidecar {
 }
 
 impl Sidecar {
-    pub fn spawn(resource_dir: Option<PathBuf>) -> Result<Self, String> {
+    /// `on_event` receives the core's push events (lines with an `event` key and no `id`).
+    pub fn spawn(
+        resource_dir: Option<PathBuf>,
+        on_event: impl Fn(Value) + Send + 'static,
+    ) -> Result<Self, String> {
         let mut cmd = build_command(resource_dir)?;
-        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
-        let mut child = cmd.spawn().map_err(|e| format!("could not start the HandOff core: {e}"))?;
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("could not start the HandOff core: {e}"))?;
         let stdin = child.stdin.take().ok_or("core stdin unavailable")?;
         let stdout = child.stdout.take().ok_or("core stdout unavailable")?;
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
@@ -37,10 +45,14 @@ impl Sidecar {
         let reader_pending = Arc::clone(&pending);
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
+                let Ok(msg) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
                 // A startup failure arrives as an error with a null id: fail every waiter with it.
                 let Some(id) = msg.get("id").and_then(Value::as_u64) else {
-                    if msg.get("error").is_some() {
+                    if msg.get("event").is_some() {
+                        on_event(msg);
+                    } else if msg.get("error").is_some() {
                         for (_, tx) in reader_pending.lock().unwrap().drain() {
                             let _ = tx.send(msg.clone());
                         }
@@ -59,7 +71,12 @@ impl Sidecar {
             }
         });
 
-        Ok(Self { child: Mutex::new(child), stdin: Mutex::new(stdin), pending, next_id: Mutex::new(1) })
+        Ok(Self {
+            child: Mutex::new(child),
+            stdin: Mutex::new(stdin),
+            pending,
+            next_id: Mutex::new(1),
+        })
     }
 
     /// Sends one request and blocks for its response. Returns the `result` or the `error` object.
@@ -75,7 +92,10 @@ impl Sidecar {
         let line = json!({"id": id, "action": action, "payload": payload}).to_string();
         {
             let mut stdin = self.stdin.lock().unwrap();
-            if writeln!(stdin, "{line}").and_then(|_| stdin.flush()).is_err() {
+            if writeln!(stdin, "{line}")
+                .and_then(|_| stdin.flush())
+                .is_err()
+            {
                 self.pending.lock().unwrap().remove(&id);
                 return Err(unavailable());
             }
@@ -134,13 +154,20 @@ fn build_command(_resource_dir: Option<PathBuf>) -> Result<Command, String> {
 
 #[cfg(not(debug_assertions))]
 fn build_command(resource_dir: Option<PathBuf>) -> Result<Command, String> {
-    let exe = if cfg!(windows) { "handoff-core.exe" } else { "handoff-core" };
+    let exe = if cfg!(windows) {
+        "handoff-core.exe"
+    } else {
+        "handoff-core"
+    };
     let path = resource_dir
         .ok_or("resource directory unavailable")?
         .join("handoff-core")
         .join(exe);
     if !path.is_file() {
-        return Err(format!("the bundled HandOff core is missing: {}", path.display()));
+        return Err(format!(
+            "the bundled HandOff core is missing: {}",
+            path.display()
+        ));
     }
     #[allow(unused_mut)]
     let mut cmd = Command::new(path);

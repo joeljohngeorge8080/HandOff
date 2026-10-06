@@ -29,6 +29,7 @@ from handoff.peer_api.auth import Authenticator
 from handoff.peer_api.server import PeerServer
 from handoff.peer_api.signing import FailureLimiter, NonceCache
 from handoff.tls import write_server_tls_files
+from handoff.transfer.drop import DropService
 from handoff.transfer.receiver import ReceiverService
 from handoff.transfer.sender import SenderService
 
@@ -68,6 +69,7 @@ class Network:
         self.connections: ConnectionManager
         self.receiver: ReceiverService
         self.sender: SenderService
+        self.drops: DropService
         self._server: PeerServer | None = None
         self._expiry: PeriodicTask | None = None
 
@@ -92,6 +94,8 @@ class Network:
             core, self.connections, limiter, accept_timeout=cfg.accept_timeout
         )
         self.sender = SenderService(core, self.connections, self.client)
+        self.drops = DropService(core, self.connections, self.sender)
+        self.drops.sweep_orphans()  # a crash can leave dropped copies behind
         self.connections.on_offline = lambda: self.sender.abort_active(
             "DEVICE_OFFLINE", "The device went offline."
         )

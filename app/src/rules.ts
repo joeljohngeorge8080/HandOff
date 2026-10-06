@@ -1,30 +1,6 @@
 // UI rules derived from the requirements (kept pure so they are unit-tested).
-import type { Connection, Transfer } from "./types";
+import type { Transfer } from "./types";
 import { FINISHED_STATES } from "./types";
-
-export interface SendContext {
-  selectedCount: number;
-  connection: Connection;
-  activeTransfer: Transfer | null;
-}
-
-/** FR: Send is enabled only with >=1 selected file AND a connected peer; one transfer at a time. */
-export function canSend(ctx: SendContext): boolean {
-  return (
-    ctx.selectedCount >= 1 &&
-    ctx.connection.connected &&
-    ctx.connection.device !== null &&
-    ctx.activeTransfer === null
-  );
-}
-
-/** Why Send is disabled, for a tooltip/hint. Empty string when enabled. */
-export function sendBlockedReason(ctx: SendContext): string {
-  if (ctx.activeTransfer !== null) return "A transfer is already in progress.";
-  if (!ctx.connection.connected || ctx.connection.device === null) return "Connect to a device first.";
-  if (ctx.selectedCount < 1) return "Select at least one file.";
-  return "";
-}
 
 /** ADR-047: switching peers is rejected while a transfer is active. */
 export function canSwitchPeer(activeTransfer: Transfer | null): boolean {
@@ -45,4 +21,17 @@ export function formatBytes(n: number): string {
     i++;
   }
   return `${v.toFixed(v < 10 ? 1 : 0)} ${units[i]}`;
+}
+
+/** Shortens a long folder path in the middle, keeping the start and the folder name visible. */
+export function shortenPath(path: string, max = 44): string {
+  if (path.length <= max) return path;
+  const keepEnd = Math.floor((max - 1) * 0.6);
+  const keepStart = max - 1 - keepEnd;
+  return `${path.slice(0, keepStart)}…${path.slice(path.length - keepEnd)}`;
+}
+
+/** The connected peer's name, or null unless it is connected and online. */
+export function connectedPeerName(connection: { connected: boolean; device: { device_name: string } | null }): string | null {
+  return connection.connected && connection.device ? connection.device.device_name : null;
 }

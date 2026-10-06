@@ -9,13 +9,10 @@ updated. Any other outcome is `failed` or `partially_completed`, never success.
 from __future__ import annotations
 
 import logging
-import mimetypes
-import os
 import re
 import shutil
 import threading
 import time
-import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,12 +23,11 @@ from sqlalchemy.exc import IntegrityError
 from handoff.audit import REJECTION_EVENTS, AuditEvent, record_event
 from handoff.config import ACCEPT_TIMEOUT_SECONDS
 from handoff.core import Core
-from handoff.db.models import File, Transfer, TransferFile, utcnow
-from handoff.db.repositories import FileRepository, TransferRepository
+from handoff.db.models import Transfer, TransferFile, utcnow
+from handoff.db.repositories import TransferRepository
+from handoff.destination import copy_verified
 from handoff.devices.connection import ConnectionManager
 from handoff.errors import HandOffError, must
-from handoff.files.naming import unique_display_name
-from handoff.files.validation import normalize_extension
 from handoff.peer_api.auth import PeerIdentity
 from handoff.peer_api.signing import FailureLimiter
 from handoff.transfer.archive import ExtractedFile, safe_extract
@@ -76,8 +72,19 @@ class ReceiverService:
 
     # ----- helpers -----------------------------------------------------------------------
 
-    def _free_bytes(self) -> int:
-        return shutil.disk_usage(self.core.paths.received_dir).free
+    def _free_bytes(self, where: Path | None = None) -> int:
+        return shutil.disk_usage(where or self.core.paths.transfers_dir).free
+
+    def _destination(self) -> Path:
+        """The receiver's own validated destination folder (ADR-055). Never network input."""
+        try:
+            return self.core.settings.receive_directory()
+        except HandOffError as exc:
+            raise HandOffError(
+                "RECEIVER_NOT_READY",
+                "This device's receive folder is not available. Choose another folder.",
+                {"reason": exc.message},
+            ) from exc
 
     def _audit_rejection(
         self,
@@ -137,13 +144,10 @@ class ReceiverService:
 
         raw_id = body.get("transfer_id")
         tid_for_audit = raw_id[:64] if isinstance(raw_id, str) else None
-        if not self.core.settings.get_receive_mode():
-            raise self._reject(
-                sender,
-                HandOffError("RECEIVE_MODE_DISABLED", "This device is not accepting files."),
-                tid_for_audit,
-                count=False,
-            )
+        try:
+            destination = self._destination()
+        except HandOffError as exc:
+            raise self._reject(sender, exc, tid_for_audit, count=False) from None
         try:
             manifest = Manifest.from_dict({"transfer_id": raw_id, "files": body.get("files")})
             self._check_declared(body, manifest)
@@ -170,7 +174,7 @@ class ReceiverService:
                     count=True,
                 )
             self._check_not_replayed(sender, tid)
-            self._check_disk(sender, manifest)
+            self._check_disk(sender, manifest, destination)
             self._insert_transfer(sender, manifest)
             work = self.core.paths.transfers_dir / tid
             work.mkdir(parents=True, exist_ok=True)
@@ -183,6 +187,7 @@ class ReceiverService:
                 manifest, sender.device_id, key, self.clock(), work, work / "payload.zip", cap
             )
             self._jobs[tid] = job
+        self.core.events.transfer_changed(tid)
         return self._created_response(job), True
 
     @staticmethod
@@ -210,9 +215,14 @@ class ReceiverService:
                 count=True,
             )
 
-    def _check_disk(self, sender: PeerIdentity, manifest: Manifest) -> None:
-        needed = 2 * manifest.total_size + _DISK_SAFETY_MARGIN  # archive + extracted copy
-        if self._free_bytes() < needed:
+    def _check_disk(self, sender: PeerIdentity, manifest: Manifest, destination: Path) -> None:
+        staging_needed = 2 * manifest.total_size + _DISK_SAFETY_MARGIN  # archive + extracted copy
+        dest_needed = manifest.total_size + _DISK_SAFETY_MARGIN
+        needed = staging_needed
+        short = self._free_bytes() < staging_needed
+        if not short and self._free_bytes(destination) < dest_needed:
+            short, needed = True, dest_needed
+        if short:
             raise self._reject(
                 sender,
                 HandOffError(
@@ -272,9 +282,6 @@ class ReceiverService:
                 raise HandOffError("TRANSFER_NOT_FOUND", "Transfer not found.")
             if job.state != "accepted":
                 raise HandOffError("INVALID_STATE", "This transfer is not waiting for data.")
-            if not self.core.settings.get_receive_mode():
-                self.fail(job, "RECEIVE_MODE_DISABLED", "This device is not accepting files.")
-                raise HandOffError("RECEIVE_MODE_DISABLED", "This device is not accepting files.")
             job.state = "uploading"
         with self.core.db.session() as s:
             repo = TransferRepository(s)
@@ -286,6 +293,7 @@ class ReceiverService:
                 s, AuditEvent.TRANSFER_STARTED, "Receiving files.",
                 device_id=sender.device_id, transfer_id=transfer_id,
             )  # fmt: skip
+        self.core.events.transfer_changed(transfer_id)
         return job
 
     def process_upload(self, job: ReceiverJob) -> dict[str, Any]:
@@ -305,6 +313,7 @@ class ReceiverService:
             raise HandOffError("INTERNAL_ERROR", "The transfer could not be completed.") from exc
         finally:
             self._cleanup(job)
+            self.core.events.transfer_changed(job.manifest.transfer_id)
 
     def _audit_archive_rejection(self, job: ReceiverJob, exc: HandOffError) -> None:
         with self.core.db.session() as s:
@@ -317,57 +326,67 @@ class ReceiverService:
                 )  # fmt: skip
 
     def _commit(self, job: ReceiverJob, results: list[ExtractedFile]) -> dict[str, Any]:
-        paths = self.core.paths
-        moved: list[Path] = []
+        """Copy each verified file into the receiver's folder, then record the outcome.
+
+        Per-file failures (bad hash on re-verification, unwritable folder) become failed
+        files, so the job can end `partially_completed` or `failed`, never falsely complete.
+        """
+        created: list[Path] = []
         try:
-            stored: dict[int, tuple[str, Path]] = {}
-            for i, r in enumerate(results):
-                if r.ok and r.path is not None:
-                    fid = str(uuid.uuid4())
-                    dest = paths.received_dir / fid
-                    os.replace(r.path, dest)
-                    moved.append(dest)
-                    stored[i] = (fid, dest)
+            stored = self._copy_to_destination(job, results, created)
             with self.core.db.session() as s:
                 return self._record_results(s, job, results, stored)
         except BaseException:
-            for p in moved:
+            for p in created:  # only files this transfer created; nothing pre-existing
                 p.unlink(missing_ok=True)
             raise
+
+    def _copy_to_destination(
+        self, job: ReceiverJob, results: list[ExtractedFile], created: list[Path]
+    ) -> dict[int, Path]:
+        try:
+            destination = self._destination()
+        except HandOffError as exc:
+            for r in results:
+                if r.ok:
+                    r.ok, r.failure_code, r.failure_message = False, exc.code, exc.message
+            return {}
+        stored: dict[int, Path] = {}
+        for i, r in enumerate(results):
+            if not (r.ok and r.path is not None):
+                continue
+            try:
+                final = copy_verified(r.path, destination, r.manifest.filename, r.manifest.sha256)
+            except HandOffError as exc:
+                r.ok, r.failure_code, r.failure_message = False, exc.code, exc.message
+                continue
+            created.append(final)
+            stored[i] = final
+        return stored
 
     def _record_results(
         self,
         s: Any,
         job: ReceiverJob,
         results: list[ExtractedFile],
-        stored: dict[int, tuple[str, Path]],
+        stored: dict[int, Path],
     ) -> dict[str, Any]:
         tid = job.manifest.transfer_id
-        repo, frepo = TransferRepository(s), FileRepository(s)
+        repo = TransferRepository(s)
         t = must(repo.get(tid), "transfer")
-        names = frepo.active_names()
         now = utcnow()
         for i, (tf, r) in enumerate(zip(t.files, results, strict=True)):
             tf.completed_at = now
             if r.ok:
-                fid, dest = stored[i]
-                display = unique_display_name(r.manifest.filename, names)
-                names.append(display)
-                frepo.add(
-                    File(
-                        id=fid, original_name=display, stored_name=fid,
-                        extension=normalize_extension(r.manifest.filename),
-                        mime_type=mimetypes.guess_type(r.manifest.filename)[0],
-                        size_bytes=r.manifest.size, sha256=r.actual_sha256 or r.manifest.sha256,
-                        source="received", storage_path=self.core.paths.relative(dest),
-                        created_at=now, updated_at=now,
-                    )
-                )  # fmt: skip
-                tf.file_id, tf.status = fid, FileStatus.COMPLETED.value
+                written = stored[i]
+                # Received files are not managed storage (ADR-055): no `files` row. The
+                # transfer keeps the sender's name (the contract key); the name actually
+                # written, after any `(1)` suffix, is in the audit entry and the reply.
+                tf.status = FileStatus.COMPLETED.value
                 record_event(
-                    s, AuditEvent.FILE_RECEIVED, f"Received {display}.", file_id=fid,
+                    s, AuditEvent.FILE_RECEIVED, f"Received {written.name}.",
                     device_id=job.source_device_id, transfer_id=tid,
-                    metadata={"file_name": display, "size_bytes": r.manifest.size},
+                    metadata={"file_name": written.name, "size_bytes": r.manifest.size},
                 )  # fmt: skip
             else:
                 tf.status = FileStatus.FAILED.value
@@ -375,6 +394,12 @@ class ReceiverService:
                 if r.failure_code == "INVALID_HASH":
                     record_event(
                         s, AuditEvent.INVALID_HASH, "SHA-256 verification failed.",
+                        device_id=job.source_device_id, transfer_id=tid,
+                        metadata={"file_name": r.manifest.filename},
+                    )  # fmt: skip
+                elif r.failure_code == "FILE_TYPE_NOT_SUPPORTED":
+                    record_event(
+                        s, AuditEvent.UNSUPPORTED_FILE, "Executable content rejected.",
                         device_id=job.source_device_id, transfer_id=tid,
                         metadata={"file_name": r.manifest.filename},
                     )  # fmt: skip
@@ -402,8 +427,13 @@ class ReceiverService:
             "status": final.value,
             "files_received": len(t.files) - len(failures),
             "files": [
-                {"name": tf.original_name, "status": tf.status, "failure_code": tf.failure_code}
-                for tf in t.files
+                {
+                    "name": tf.original_name,
+                    "status": tf.status,
+                    "failure_code": tf.failure_code,
+                    **({"saved_as": stored[i].name} if i in stored else {}),
+                }
+                for i, tf in enumerate(t.files)
             ],
         }
 
@@ -427,6 +457,7 @@ class ReceiverService:
                     device_id=job.source_device_id, transfer_id=tid, metadata={"code": code},
                 )  # fmt: skip
         self._cleanup(job)
+        self.core.events.transfer_changed(tid)
 
     def _cleanup(self, job: ReceiverJob) -> None:
         with self._lock:

@@ -1399,12 +1399,14 @@ dependencies = [
 name = "handoff"
 version = "0.1.0"
 dependencies = [
+ "gdk",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-notification",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

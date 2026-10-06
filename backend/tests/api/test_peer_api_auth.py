@@ -37,9 +37,16 @@ def test_unknown_routes_and_methods_use_the_standard_error_format(h):
     h.connect()
     r = h.call("GET", "/api/v1/nope")
     assert r.status_code == 404 and set(r.json()) == {"error"}
-    r = h.call("PUT", "/api/v1/receive-mode", json={"enabled": True})
+    r = h.call("PUT", "/api/v1/device", json={})
     assert r.status_code == 405 and err(r) == "INVALID_REQUEST"
-    assert h.core.settings.get_receive_mode() is False  # a peer can never change it
+
+
+def test_the_receive_mode_endpoint_no_longer_exists(h):
+    """ADR-055: Receive Mode was removed, so there is nothing for a peer to read or set."""
+    h.connect()
+    for method in ("GET", "PUT", "POST"):
+        r = h.call(method, "/api/v1/receive-mode", json={"enabled": True})
+        assert r.status_code == 404 and err(r) == "INVALID_REQUEST"
 
 
 def test_request_id_is_echoed_generated_and_sanitized(h):
@@ -81,15 +88,13 @@ def test_known_but_untrusted_device_is_rejected(h):
     assert r.status_code == 403 and err(r) == "DEVICE_NOT_TRUSTED"
 
 
-def test_trusted_device_can_read_device_info_and_receive_mode(h):
+def test_trusted_device_can_read_device_info(h):
     assert h.connect().status_code == 200
     d = h.call("GET", "/api/v1/device").json()
     assert d["device_id"] == h.core.identity.device_id
-    assert d["api_version"] == "v1" and d["receive_mode"] is False and d["status"] == "available"
-    assert h.call("GET", "/api/v1/receive-mode").json() == {"enabled": False}
-    h.core.settings.set_receive_mode(True)
-    assert h.call("GET", "/api/v1/receive-mode").json() == {"enabled": True}
-    assert h.call("GET", "/api/v1/device").json()["receive_mode"] is True
+    assert d["api_version"] == "v1" and d["status"] == "available"
+    assert "receive_mode" not in d
+    assert "receive_directory" not in d  # a peer must never learn local paths
 
 
 def test_a_replayed_request_is_rejected(h):
@@ -110,7 +115,7 @@ def test_requests_outside_the_time_window_are_rejected(h, delta):
 def test_a_signature_cannot_be_reused_for_another_path_or_method(h):
     h.connect()
     headers = h.headers("GET", "/api/v1/device")
-    assert h.http.get("/api/v1/receive-mode", headers=headers).status_code == 401
+    assert h.http.get("/api/v1/connection", headers=headers).status_code == 401
     headers = h.headers("GET", "/api/v1/connection")
     assert h.http.delete("/api/v1/connection", headers=headers).status_code == 401
 

@@ -10,7 +10,6 @@ API_CODES = [
     "DEVICE_ALREADY_CONNECTED",
     "PEER_CONNECTION_FAILED",
     "INVALID_DEVICE_ID",
-    "RECEIVE_MODE_DISABLED",
     "RECEIVER_NOT_READY",
     "FILE_NOT_FOUND",
     "FILE_TYPE_NOT_SUPPORTED",
@@ -43,7 +42,6 @@ API_CODES = [
 
 def test_documented_status_mappings():
     expect = {
-        "RECEIVE_MODE_DISABLED": 409,
         "FILE_TOO_LARGE": 413,
         "INVALID_SIGNATURE": 401,
         "DEVICE_NOT_TRUSTED": 403,

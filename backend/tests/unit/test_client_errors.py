@@ -25,10 +25,10 @@ def test_transport_errors_become_stable_codes(exc, code):
 def test_peer_error_responses_are_rebuilt_faithfully():
     resp = httpx.Response(
         409,
-        json={"error": {"code": "RECEIVE_MODE_DISABLED", "message": "no", "details": {"a": 1}}},
+        json={"error": {"code": "RECEIVER_NOT_READY", "message": "no", "details": {"a": 1}}},
     )
     e = error_from_response(resp)
-    assert (e.code, e.message, e.details) == ("RECEIVE_MODE_DISABLED", "no", {"a": 1})
+    assert (e.code, e.message, e.details) == ("RECEIVER_NOT_READY", "no", {"a": 1})
 
 
 @pytest.mark.parametrize(

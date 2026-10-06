@@ -41,8 +41,6 @@ class Dispatcher:
             "files.add": self._files_add,
             "files.get": self._files_get,
             "files.delete": self._files_delete,
-            "receive_mode.get": self._receive_mode_get,
-            "receive_mode.set": self._receive_mode_set,
             "settings.get": self._settings_get,
             "settings.set": self._settings_set,
             "history.list": self._history_list,
@@ -51,6 +49,8 @@ class Dispatcher:
             "devices.list": self._devices_list,
             "devices.connect": self._devices_connect,
             "devices.status": self._devices_status,
+            "drop.inspect": self._drop_inspect,
+            "drop.send": self._drop_send,
             "transfer.create": self._transfer_create,
             "transfer.status": self._transfer_status,
         }
@@ -100,13 +100,7 @@ class Dispatcher:
         self.core.files.delete_file(file_id)
         return {"deleted": file_id}
 
-    # ----- receive mode and settings ------------------------------------------------------
-
-    def _receive_mode_get(self, _p: dict[str, Any]) -> dict[str, Any]:
-        return {"enabled": self.core.settings.get_receive_mode()}
-
-    def _receive_mode_set(self, p: dict[str, Any]) -> dict[str, Any]:
-        return {"enabled": self.core.settings.set_receive_mode(p.get("enabled"))}  # type: ignore[arg-type]
+    # ----- settings ------------------------------------------------------
 
     def _settings_get(self, _p: dict[str, Any]) -> dict[str, Any]:
         return {"settings": self.core.settings.get_all()}
@@ -131,7 +125,7 @@ class Dispatcher:
                 "device_id": self.core.identity.device_id,
                 "device_name": self.core.device_name,
             },
-            "receive_mode": self.core.settings.get_receive_mode(),
+            "receive_directory": str(self.core.settings.receive_directory(validate=False)),
             "connection": (
                 self.network.connections.snapshot()
                 if self.network
@@ -159,6 +153,12 @@ class Dispatcher:
 
     def _devices_status(self, _p: dict[str, Any]) -> dict[str, Any]:
         return {"connection": self._net().connections.snapshot()}
+
+    def _drop_inspect(self, p: dict[str, Any]) -> dict[str, Any]:
+        return self._net().drops.inspect(p.get("paths"))
+
+    def _drop_send(self, p: dict[str, Any]) -> dict[str, Any]:
+        return self._net().drops.send(p.get("paths"))
 
     def _transfer_create(self, p: dict[str, Any]) -> dict[str, Any]:
         net = self._net()

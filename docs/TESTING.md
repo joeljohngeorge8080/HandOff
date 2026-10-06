@@ -1,5 +1,7 @@
 # Testing Strategy
 
+> **Phase 2 amendment.** §21 and §51 (Receive Mode tests) are replaced by edge/drop tests: extension and magic-byte rejection, folder/symlink/shortcut rejection, all-or-nothing drops, no-peer and active-transfer rejection, ephemeral-copy cleanup, `receive_directory` validation (relative, traversal, file, unwritable), collision naming and exclusive-create races at the destination, hash mismatch at the destination, Wayland/X11 and multi-monitor geometry (Rust unit tests), and the edge state machine (vitest). §34/§41 fixtures use `.png`/`.pdf` instead of `.mp4`/`.exe`. Suites: `backend/tests/e2e/test_drop.py` (drop pipeline and push events against two real nodes), `unit/test_destination.py`, `unit/test_events.py`; frontend `edge/machine.test.ts`, `edge/controller.test.ts`, `input/inputs.test.ts`, `sync.test.ts`, `anim/motion.test.ts`; Rust `cargo test` for edge geometry (1.0x-2.0x scaling, multi-monitor) and the pointer tracker. Debug builds only: `HANDOFF_DEV_SCRIPT` (see `src-tauri/src/dev.rs`) replays inputs into the real UI for visual checks. Not automated: a real OS drag-and-drop (needs a human or a desktop-automation harness), and Windows behaviour.
+
 ## 1. Purpose
 
 This document defines the testing strategy for HandOff Phase 1.

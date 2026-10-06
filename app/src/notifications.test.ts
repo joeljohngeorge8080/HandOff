@@ -17,11 +17,11 @@ describe("noticeFor", () => {
     );
   });
   it("reports a completed send", () => {
-    expect(noticeFor(t({ status: "completed" }))?.body).toMatch(/completed successfully/);
+    expect(noticeFor(t({ status: "completed" }))?.body).toMatch(/^Transfer complete/);
   });
   it("reports failure and partial completion", () => {
     expect(noticeFor(t({ status: "failed" }))?.body).toMatch(/failed/);
-    expect(noticeFor(t({ status: "partially_completed" }))?.body).toMatch(/some files failed/);
+    expect(noticeFor(t({ status: "partially_completed" }))?.body).toMatch(/Some files failed/);
   });
   it("is silent for in-flight states", () => {
     for (const s of ["created", "validating", "accepted", "transferring"]) {

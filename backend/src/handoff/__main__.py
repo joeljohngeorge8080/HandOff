@@ -20,7 +20,7 @@ from handoff.devices.discovery import StaticDiscovery
 from handoff.errors import HandOffError
 from handoff.history import PeriodicTask
 from handoff.ipc.dispatcher import Dispatcher
-from handoff.ipc.protocol import encode_error
+from handoff.ipc.protocol import encode_error, encode_event
 from handoff.network import Network, NetworkConfig
 from handoff.paths import AppPaths, default_data_dir
 
@@ -99,6 +99,9 @@ def main(argv: list[str] | None = None) -> int:
 
     def work(line: str) -> None:
         emit(dispatcher.handle_line(line))
+
+    # Push transfer/connection changes to the UI (ADR-054); the database stays the truth.
+    core.events.subscribe(lambda name, data: emit(encode_event(name, data)))
 
     ready: dict[str, object] = {
         "event": "ready",

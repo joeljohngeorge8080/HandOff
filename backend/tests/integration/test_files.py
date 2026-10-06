@@ -1,4 +1,5 @@
 import hashlib
+import sys
 from pathlib import Path
 
 import pytest
@@ -26,7 +27,7 @@ def _sparse(path: Path, size: int) -> Path:
     return path
 
 
-@pytest.mark.parametrize("name", ["notes.txt", "photo.jpg", "clip.mp4", "setup.exe"])
+@pytest.mark.parametrize("name", ["notes.txt", "photo.jpg", "scan.jpeg", "pic.png", "doc.pdf"])
 def test_import_copies_each_allowed_type_and_records_metadata(core, make_file, name):
     content = b"some bytes for " + name.encode()
     src = make_file(name, content)
@@ -51,13 +52,14 @@ def test_import_leaves_no_temporary_files_behind(core, make_file):
     assert list(core.paths.temp_dir.iterdir()) == []
 
 
-@pytest.mark.parametrize("name", ["PHOTO.JPG", "Video.MP4", "NOTES.TXT", "PROGRAM.EXE"])
+@pytest.mark.parametrize("name", ["PHOTO.JPG", "SCAN.JPEG", "NOTES.TXT", "DOC.PDF", "Pic.PnG"])
 def test_import_accepts_uppercase_extensions(core, make_file, name):
     assert core.files.import_file(make_file(name))["extension"] == Path(name).suffix.lower()
 
 
 @pytest.mark.parametrize(
-    "name", ["doc.pdf", "a.docx", "a.zip", "a.png", "run.sh", "x.bat", "noext"]
+    "name",
+    ["setup.exe", "SETUP.EXE", "clip.mp4", "a.docx", "a.zip", "run.sh", "x.bat", "noext", "a.lnk"],
 )
 def test_import_rejects_unsupported_types_and_stores_nothing(core, make_file, name):
     with pytest.raises(HandOffError) as e:
@@ -81,7 +83,7 @@ def test_import_accepts_sizes_up_to_exactly_50_mb(core, tmp_path, size):
 
 @pytest.mark.parametrize("size", [config.MAX_FILE_SIZE + 1, 72 * MB])
 def test_import_rejects_files_over_50_mb_without_copying(core, tmp_path, size):
-    src = _sparse(tmp_path / "huge.mp4", size)
+    src = _sparse(tmp_path / "huge.png", size)
     with pytest.raises(HandOffError) as e:
         core.files.import_file(src)
     assert e.value.code == "FILE_TOO_LARGE"
@@ -96,7 +98,7 @@ def test_a_file_that_grows_during_copy_is_still_bounded(core, tmp_path, monkeypa
     monkeypatch.setattr("handoff.files.validation.MAX_FILE_SIZE", 1000)
     src = tmp_path / "grow.txt"
     src.write_bytes(b"x" * 5000)
-    monkeypatch.setattr(FileManager, "_stat_regular_file", staticmethod(lambda p: 10))
+    monkeypatch.setattr(FileManager, "stat_regular_file", staticmethod(lambda p: 10))
     with pytest.raises(HandOffError) as e:
         core.files.import_file(src)
     assert e.value.code == "FILE_TOO_LARGE"
@@ -286,3 +288,72 @@ def test_delete_reports_when_the_stored_data_cannot_be_removed(core, make_file, 
     assert core.files.list_files() == []  # the record is already logically deleted
     with core.db.session() as s:
         assert s.get(File, rec["id"]).deleted_at is not None
+
+
+# ---------------------------------------------------------------- Phase 2 drop rules (ADR-055)
+
+
+def test_a_folder_is_rejected_with_a_clear_reason(core, tmp_path):
+    folder = tmp_path / "album.jpg"  # even a folder that looks like an image
+    folder.mkdir()
+    with pytest.raises(HandOffError) as e:
+        core.files.import_file(folder)
+    assert e.value.code == "INVALID_FILE" and e.value.details["reason"] == "directory"
+    assert list(core.paths.files_dir.iterdir()) == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_a_symlink_is_rejected_and_never_followed(core, make_file, tmp_path):
+    target = make_file("real.txt", b"secret")
+    link = tmp_path / "link.txt"
+    link.symlink_to(target)
+    with pytest.raises(HandOffError) as e:
+        core.files.import_file(link)
+    assert e.value.code == "INVALID_FILE" and e.value.details["reason"] == "symlink"
+    assert list(core.paths.files_dir.iterdir()) == []
+
+
+def test_a_missing_path_is_reported_as_missing(core, tmp_path):
+    with pytest.raises(HandOffError) as e:
+        core.files.import_file(tmp_path / "gone.txt")
+    assert e.value.code == "FILE_NOT_FOUND" and e.value.details["reason"] == "missing"
+
+
+@pytest.mark.parametrize(
+    ("name", "head"),
+    [
+        ("photo.jpg", b"MZ\x90\x00\x03"),  # Windows program renamed to .jpg
+        ("scan.png", b"\x7fELF\x02\x01\x01"),  # Linux program renamed to .png
+        ("notes.txt", b"MZ"),
+        ("doc.PDF", b"\x7fELF"),
+    ],
+)
+def test_a_renamed_executable_is_rejected_by_content(core, tmp_path, name, head):
+    src = tmp_path / name
+    src.write_bytes(head + b"\x00" * 100)
+    with pytest.raises(HandOffError) as e:
+        core.files.import_file(src)
+    assert e.value.code == "FILE_TYPE_NOT_SUPPORTED"
+    assert e.value.details["reason"] == "executable_content"
+    assert list(core.paths.files_dir.iterdir()) == [] and list(core.paths.temp_dir.iterdir()) == []
+    assert src.exists()  # the user's original is never touched
+    assert len(_audit(core, AuditEvent.UNSUPPORTED_FILE)) == 1
+
+
+def test_real_images_and_documents_are_not_mistaken_for_executables(core, tmp_path):
+    for name, head in [
+        ("a.jpg", b"\xff\xd8\xff\xe0"),
+        ("b.png", b"\x89PNG\r\n\x1a\n"),
+        ("c.pdf", b"%PDF-1.7"),
+        ("d.txt", b""),
+        ("e.txt", b"Mission notes"),
+    ]:
+        p = tmp_path / name
+        p.write_bytes(head)
+        core.files.import_file(p)
+
+
+def test_validate_source_checks_everything_without_copying(core, make_file):
+    name, ext, size = core.files.validate_source(make_file("photo.JPG", b"abc"))
+    assert (name, ext, size) == ("photo.JPG", ".jpg", 3)
+    assert list(core.paths.files_dir.iterdir()) == []

@@ -146,7 +146,6 @@ def create_app(ctx: PeerContext) -> FastAPI:
             "device_name": ctx.core.device_name,
             "api_version": API_VERSION,
             "platform": PLATFORM,
-            "receive_mode": ctx.core.settings.get_receive_mode(),
             "status": "available",
         }
 
@@ -183,11 +182,6 @@ def create_app(ctx: PeerContext) -> FastAPI:
         peer = authenticate(request)
         ctx.connections.release_inbound(peer.device_id)
         return {"status": "released"}
-
-    @app.get("/api/v1/receive-mode")
-    def receive_mode(request: Request) -> dict[str, bool]:
-        authenticate(request)
-        return {"enabled": ctx.core.settings.get_receive_mode()}
 
     @app.post("/api/v1/transfers")
     async def create_transfer(request: Request) -> JSONResponse:
@@ -233,6 +227,13 @@ def create_app(ctx: PeerContext) -> FastAPI:
                         )
                     out.write(chunk)
                     job.bytes_received = received
+                    if ctx.core.events.progress_due(transfer_id):
+                        await run_in_threadpool(
+                            ctx.core.events.transfer_changed,
+                            transfer_id,
+                            bytes_transferred=received,
+                            throttle=True,
+                        )
             if declared.isdigit() and int(declared) != received:
                 raise HandOffError("TRANSFER_INCOMPLETE", "The upload was incomplete.")
         except ClientDisconnect:

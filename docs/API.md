@@ -1,5 +1,19 @@
 # API
 
+> **Phase 2 amendment (ADR-055) — breaking.** Removed: `GET /api/v1/receive-mode` (§13), the `receive_mode` field of `GET /api/v1/device`, the Receive Mode check in §15/§16, the IPC actions `receive_mode.get` / `receive_mode.set`, and the error code `RECEIVE_MODE_DISABLED`. Allowed extensions are `.txt .jpg .jpeg .png .pdf`. The receiver writes to its own `receive_directory`; an invalid one returns `RECEIVER_NOT_READY`. New local IPC actions (never exposed on the LAN): `drop.inspect`, `drop.send`, and `settings.set` with key `receive_directory`. New core-to-UI push events: `transfer.updated`, `connection.changed`. Peers must run 0.2.x or later.
+
+> **Phase 2 local IPC additions (ADR-054; never exposed on the LAN).**
+>
+> `drop.inspect {paths[]}` → `{ok, file_count, total_size, items[{name, ok, size?, code?, reason?, message?}]}`. Read-only: copies and records nothing. `reason` is one of `unsupported_type, executable_content, directory, symlink, too_large, missing, invalid_name, unreadable`.
+>
+> `drop.send {paths[]}` → `{transfer}`. Order: connected online peer (`DEVICE_NOT_FOUND` "No HandOff device connected" / `DEVICE_OFFLINE`), no active transfer (`INVALID_STATE`), then **every** path validated (all-or-nothing; the error's `details.items` lists each verdict), then `files.import` (copy + SHA-256) and the existing `transfer.create`. The managed copies are logically deleted when the transfer is terminal. At most 100 paths.
+>
+> `settings.set {key:"receive_directory", value}` validates the folder (absolute, existing, writable, not inside HandOff's data directory; otherwise `INVALID_PATH`). `status.snapshot` carries `receive_directory` instead of `receive_mode`.
+>
+> **Push events** (stdout lines with `event` and no `id`): `transfer.updated` (the transfer as in `history.list`, progress throttled to ~4 Hz, every status change delivered) and `connection.changed` (the connection snapshot). Events only notify; the database stays the truth and `status.snapshot` can always recover a missed one.
+>
+> Peer response addition: `POST /transfers/{id}/data` file results may carry `saved_as` (the name written on the receiver). `name` remains the manifest name.
+
 ## 1. Purpose
 
 This document defines the API contracts used by HandOff.

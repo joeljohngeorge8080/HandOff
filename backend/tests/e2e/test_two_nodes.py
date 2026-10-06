@@ -4,9 +4,7 @@ import hashlib
 import os
 
 import pytest
-from helpers import connect_pair, wait_for
-
-import handoff.transfer.sender as sender_mod
+from helpers import connect_pair, pause_upload, wait_for
 
 MB = 1024 * 1024
 
@@ -29,28 +27,12 @@ def send(a, b, ids):
 
 
 def received(node):
-    return {f["name"]: f for f in node.ok("files.list")["files"] if f["source"] == "received"}
+    """What the node wrote into its own receive folder, by name (ADR-055)."""
+    return node.received_files()
 
 
 def stored_bytes(node, file_id):
     return node.core.files.file_path(file_id).read_bytes()
-
-
-def pause_upload(monkeypatch, gate, *, then_raise=None):
-    """Hold the sender's upload after its first chunk until the test releases the gate."""
-    monkeypatch.setattr(sender_mod, "IO_CHUNK_SIZE", 1024)
-    orig = sender_mod.SenderService._chunks
-
-    def slow(self, path, tid):
-        for i, chunk in enumerate(orig(self, path, tid)):
-            yield chunk
-            if i == 0:
-                gate.started.set()
-                assert gate.release.wait(30)
-                if then_raise:
-                    raise then_raise
-
-    monkeypatch.setattr(sender_mod.SenderService, "_chunks", slow)
 
 
 def _audit_rows(node):
@@ -122,7 +104,6 @@ def test_an_unconnected_device_cannot_send_to_a_receiver(trio):
     from handoff.devices.client import PeerClient
 
     _, b, c = trio
-    b.ok("receive_mode.set", {"enabled": True})
     body = transfer_body("tr_x", {"a.txt": b"x"}, source=c.device_id)
     r = PeerClient(c.core.identity).request(
         "127.0.0.1", b.network.port, "POST", "/api/v1/transfers",
@@ -139,7 +120,6 @@ def test_an_unconnected_device_cannot_send_to_a_receiver(trio):
 def test_single_file_transfer_end_to_end(pair, tmp_path):
     a, b = pair
     connect_pair(a, b)
-    b.ok("receive_mode.set", {"enabled": True})
     data = os.urandom(300_000)
     fid = a.import_bytes("photo.jpg", data, tmp_path)
 
@@ -153,12 +133,8 @@ def test_single_file_transfer_end_to_end(pair, tmp_path):
 
     # receiver: file present, identical, hash verified, history recorded
     wait_for(lambda: b.transfer(tid)["status"] == "completed", what="receiver to finish")
-    (rec,) = received(b).values()
-    assert stored_bytes(b, rec["id"]) == data
-    with b.core.db.session() as s:
-        from handoff.db.models import File
-
-        assert s.get(File, rec["id"]).sha256 == hashlib.sha256(data).hexdigest()
+    assert received(b) == {"photo.jpg": data}  # in the receiver's folder, byte for byte
+    assert b.ok("files.list")["files"] == []  # received files are not HandOff-managed files
     hist_b = b.transfer(tid)
     assert (hist_b["direction"], hist_b["peer_device_name"]) == ("received", "Alice")
     assert (done["direction"], done["peer_device_name"]) == ("sent", "Bob")
@@ -179,19 +155,17 @@ def test_single_file_transfer_end_to_end(pair, tmp_path):
 def test_multiple_files_travel_as_one_transfer_job(pair, tmp_path):
     a, b = pair
     connect_pair(a, b)
-    b.ok("receive_mode.set", {"enabled": True})
     contents = {
         "notes.txt": b"hello world",
         "photo.jpg": os.urandom(50_000),
-        "setup.exe": os.urandom(200_000),
-        "clip.mp4": os.urandom(2 * MB),
+        "report.pdf": os.urandom(200_000),
+        "scan.png": os.urandom(2 * MB),
     }
     ids = [a.import_bytes(n, d, tmp_path) for n, d in contents.items()]
     tid = send(a, b, ids)
     assert a.wait_terminal(tid)["status"] == "completed"
     wait_for(lambda: len(received(b)) == 4, what="all files")
-    for name, data in contents.items():
-        assert stored_bytes(b, received(b)[name]["id"]) == data
+    assert received(b) == contents
     assert len(a.ok("history.list")["items"]) == 1 and len(b.ok("history.list")["items"]) == 1
     assert b.transfer(tid)["file_count"] == 4
 
@@ -199,7 +173,6 @@ def test_multiple_files_travel_as_one_transfer_job(pair, tmp_path):
 def test_sending_the_same_file_twice_never_overwrites(pair, tmp_path):
     a, b = pair
     connect_pair(a, b)
-    b.ok("receive_mode.set", {"enabled": True})
     fid = a.import_bytes("photo.jpg", b"same bytes", tmp_path)
     for _ in range(2):
         assert a.wait_terminal(send(a, b, [fid]))["status"] == "completed"
@@ -209,9 +182,8 @@ def test_sending_the_same_file_twice_never_overwrites(pair, tmp_path):
 def test_the_ui_can_watch_progress_of_a_running_transfer(pair, tmp_path, monkeypatch, gate):
     a, b = pair
     connect_pair(a, b)
-    b.ok("receive_mode.set", {"enabled": True})
     pause_upload(monkeypatch, gate)
-    fid = a.import_bytes("big.mp4", os.urandom(200_000), tmp_path)
+    fid = a.import_bytes("big.png", os.urandom(200_000), tmp_path)
     tid = send(a, b, [fid])
     assert gate.started.wait(10)
     active = a.ok("status.snapshot")["active_transfer"]
@@ -226,51 +198,71 @@ def test_the_ui_can_watch_progress_of_a_running_transfer(pair, tmp_path, monkeyp
 # ------------------------------------------------------------------ refusals and failures
 
 
-def test_receive_mode_off_blocks_the_transfer_before_anything_is_sent(pair, tmp_path):
+def test_a_receiver_without_a_usable_folder_fails_the_transfer_cleanly(pair, tmp_path):
     a, b = pair
     connect_pair(a, b)
-    fid = a.import_bytes("a.txt", b"x", tmp_path)
-    out = a.rpc("transfer.create", {"file_ids": [fid], "destination_device_id": b.device_id})
-    assert out["error"]["code"] == "RECEIVE_MODE_DISABLED"
-    assert "Bob is not accepting files" in out["error"]["message"]
-    assert a.ok("history.list")["items"] == [] and b.ok("history.list")["items"] == []
-    assert "TRANSFER_REJECTED" in audit_set(a)
-
-
-def test_receive_mode_switched_off_after_the_check_fails_the_transfer_cleanly(
-    pair, tmp_path, monkeypatch
-):
-    a, b = pair
-    connect_pair(a, b)
-    b.ok("receive_mode.set", {"enabled": True})
-    monkeypatch.setattr(a.network.sender, "_require_receiver_ready", lambda peer: None)
-    b.ok("receive_mode.set", {"enabled": False})  # the race: it was ON when we checked
+    b.inbox.rmdir()  # e.g. a USB stick was unplugged
     fid = a.import_bytes("a.txt", b"x", tmp_path)
     done = a.wait_terminal(send(a, b, [fid]))
-    assert done["status"] == "failed" and done["error_code"] == "RECEIVE_MODE_DISABLED"
+    assert done["status"] == "failed" and done["error_code"] == "RECEIVER_NOT_READY"
     assert done["files"][0]["status"] == "failed"
-    assert b.ok("history.list")["items"] == [] and received(b) == {}
+    assert b.ok("history.list")["items"] == []  # the receiver never accepted anything
     assert "TRANSFER_REJECTED" in audit_set(b)
+    assert a.ok("status.snapshot")["active_transfer"] is None
+
+
+def test_the_receiver_can_change_its_folder_between_transfers(pair, tmp_path):
+    a, b = pair
+    connect_pair(a, b)
+    fid = a.import_bytes("photo.jpg", b"first", tmp_path)
+    assert a.wait_terminal(send(a, b, [fid]))["status"] == "completed"
+    elsewhere = tmp_path / "Projects"
+    elsewhere.mkdir()
+    b.ok("settings.set", {"key": "receive_directory", "value": str(elsewhere)})
+    assert a.wait_terminal(send(a, b, [fid]))["status"] == "completed"
+    assert sorted(p.name for p in elsewhere.iterdir()) == ["photo.jpg"]
+    assert sorted(received(b)) == ["photo.jpg"]  # the first one stayed where it was
+
+
+def test_the_sender_has_no_say_over_where_files_land(pair, tmp_path):
+    """A hostile or buggy peer cannot name a path: the manifest only carries file names."""
+    a, b = pair
+    connect_pair(a, b)
+    fid = a.import_bytes("photo.jpg", b"data", tmp_path)
+    assert a.wait_terminal(send(a, b, [fid]))["status"] == "completed"
+    assert list(received(b)) == ["photo.jpg"]
+    assert not any(a.inbox.iterdir())  # and nothing leaked into the sender's own inbox
+
+
+def test_a_file_already_in_the_receive_folder_is_never_overwritten(pair, tmp_path):
+    a, b = pair
+    connect_pair(a, b)
+    (b.inbox / "photo.jpg").write_bytes(b"the receiver's own precious photo")
+    fid = a.import_bytes("photo.jpg", b"incoming", tmp_path)
+    assert a.wait_terminal(send(a, b, [fid]))["status"] == "completed"
+    assert received(b) == {
+        "photo.jpg": b"the receiver's own precious photo",
+        "photo(1).jpg": b"incoming",
+    }
 
 
 def test_a_corrupted_file_gives_a_partially_completed_transfer_on_both_sides(pair, tmp_path):
     a, b = pair
     connect_pair(a, b)
-    b.ok("receive_mode.set", {"enabled": True})
     good1 = a.import_bytes("one.txt", b"first file", tmp_path)
     bad = a.import_bytes("two.jpg", b"B" * 5000, tmp_path)
-    good2 = a.import_bytes("three.exe", b"third file", tmp_path)
+    good2 = a.import_bytes("three.pdf", b"third file", tmp_path)
     a.core.files.file_path(bad).write_bytes(b"X" * 5000)  # same size, bytes rot on the sender
 
     tid = send(a, b, [good1, bad, good2])
     done = a.wait_terminal(tid)
     assert done["status"] == "partially_completed"
     assert {f["name"]: f["status"] for f in done["files"]} == {
-        "one.txt": "completed", "two.jpg": "failed", "three.exe": "completed",
+        "one.txt": "completed", "two.jpg": "failed", "three.pdf": "completed",
     }  # fmt: skip
     assert [f["failure_code"] for f in done["files"] if f["status"] == "failed"] == ["INVALID_HASH"]
     wait_for(lambda: b.transfer(tid)["status"] == "partially_completed", what="receiver")
-    assert sorted(received(b)) == ["one.txt", "three.exe"]
+    assert sorted(received(b)) == ["one.txt", "three.pdf"]  # the corrupted file is not written
     assert "INVALID_HASH" in audit_set(b)
     assert "TRANSFER_PARTIALLY_COMPLETED" in audit_set(a)
 
@@ -278,7 +270,6 @@ def test_a_corrupted_file_gives_a_partially_completed_transfer_on_both_sides(pai
 def test_when_every_file_is_corrupted_the_transfer_fails(pair, tmp_path):
     a, b = pair
     connect_pair(a, b)
-    b.ok("receive_mode.set", {"enabled": True})
     fid = a.import_bytes("only.txt", b"original", tmp_path)
     a.core.files.file_path(fid).write_bytes(b"tampered")  # same length
     done = a.wait_terminal(send(a, b, [fid]))
@@ -289,10 +280,9 @@ def test_when_every_file_is_corrupted_the_transfer_fails(pair, tmp_path):
 def test_only_one_transfer_can_be_active_at_a_time(pair, tmp_path, monkeypatch, gate):
     a, b = pair
     connect_pair(a, b)
-    b.ok("receive_mode.set", {"enabled": True})
     pause_upload(monkeypatch, gate)
-    f1 = a.import_bytes("one.mp4", os.urandom(100_000), tmp_path)
-    f2 = a.import_bytes("two.mp4", b"small", tmp_path)
+    f1 = a.import_bytes("one.png", os.urandom(100_000), tmp_path)
+    f2 = a.import_bytes("two.png", b"small", tmp_path)
     tid = send(a, b, [f1])
     assert gate.started.wait(10)
     out = a.rpc("transfer.create", {"file_ids": [f2], "destination_device_id": b.device_id})
@@ -323,7 +313,6 @@ def test_transfer_create_validates_its_input(pair, payload, code):
 def test_unknown_files_cannot_be_sent(pair):
     a, b = pair
     connect_pair(a, b)
-    b.ok("receive_mode.set", {"enabled": True})
     out = a.rpc("transfer.create", {"file_ids": ["nope"], "destination_device_id": b.device_id})
     assert out["error"]["code"] == "FILE_NOT_FOUND"
 
@@ -331,7 +320,6 @@ def test_unknown_files_cannot_be_sent(pair):
 def test_a_file_that_changed_size_on_disk_is_not_sent(pair, tmp_path):
     a, b = pair
     connect_pair(a, b)
-    b.ok("receive_mode.set", {"enabled": True})
     fid = a.import_bytes("a.txt", b"12345", tmp_path)
     a.core.files.file_path(fid).write_bytes(b"123")
     out = a.rpc("transfer.create", {"file_ids": [fid], "destination_device_id": b.device_id})
@@ -346,11 +334,10 @@ def test_switching_peers_is_blocked_during_a_transfer_then_allowed(
 ):
     a, b, c = trio
     connect_pair(a, b)
-    b.ok("receive_mode.set", {"enabled": True})
     a.see(b, c)
     c.see(a)
     pause_upload(monkeypatch, gate)
-    fid = a.import_bytes("clip.mp4", os.urandom(100_000), tmp_path)
+    fid = a.import_bytes("clip.png", os.urandom(100_000), tmp_path)
     tid = send(a, b, [fid])
     assert gate.started.wait(10)
 
@@ -388,7 +375,6 @@ def test_a_receiver_connected_to_someone_else_turns_away_a_second_device(trio):
 def test_offline_peer_is_detected_and_recovers_when_it_returns(pair, tmp_path):
     a, b = pair
     connect_pair(a, b)
-    b.ok("receive_mode.set", {"enabled": True})
     b.stop()
     wait_for(
         lambda: a.ok("devices.status")["connection"]["device"]["status"] == "offline",
@@ -401,12 +387,11 @@ def test_offline_peer_is_detected_and_recovers_when_it_returns(pair, tmp_path):
     out = a.rpc("transfer.create", {"file_ids": [fid], "destination_device_id": b.device_id})
     assert out["error"]["code"] == "DEVICE_OFFLINE"
 
-    b.restart()  # new port, same identity, trust and Receive Mode persisted on disk
+    b.restart()  # new port, same identity and trust persisted on disk
     a.see(b)
     wait_for(
         lambda: a.ok("devices.status")["connection"]["connected"] is True, what="peer to come back"
     )
-    assert b.ok("receive_mode.get")["enabled"] is True
     done = a.wait_terminal(send(a, b, [fid]))  # Bob accepts without Alice reconnecting
     assert done["status"] == "completed"
     assert list(received(b)) == ["a.txt"]
@@ -417,9 +402,8 @@ def test_receiver_going_offline_mid_transfer_fails_it_instead_of_hanging(
 ):
     a, b = pair
     connect_pair(a, b)
-    b.ok("receive_mode.set", {"enabled": True})
     pause_upload(monkeypatch, gate)
-    fid = a.import_bytes("clip.mp4", os.urandom(200_000), tmp_path)
+    fid = a.import_bytes("clip.png", os.urandom(200_000), tmp_path)
     tid = send(a, b, [fid])
     assert gate.started.wait(10)
 
@@ -443,9 +427,8 @@ def test_sender_crash_mid_upload_leaves_the_receiver_clean_and_failed(
 ):
     a, b = pair
     connect_pair(a, b)
-    b.ok("receive_mode.set", {"enabled": True})
     pause_upload(monkeypatch, gate, then_raise=RuntimeError("sender process died"))
-    fid = a.import_bytes("clip.mp4", os.urandom(200_000), tmp_path)
+    fid = a.import_bytes("clip.png", os.urandom(200_000), tmp_path)
     tid = send(a, b, [fid])
     assert gate.started.wait(10)
     gate.release.set()
@@ -467,7 +450,6 @@ def test_sender_crash_mid_upload_leaves_the_receiver_clean_and_failed(
 def test_restarted_sender_can_reconnect_and_keep_going(pair, tmp_path):
     a, b = pair
     connect_pair(a, b)
-    b.ok("receive_mode.set", {"enabled": True})
     a.restart()
     a.see(b)
     assert a.ok("devices.connect", {"device_id": b.device_id})["connection"]["connected"] is True
@@ -507,7 +489,6 @@ def test_a_garbled_or_inconsistent_reply_is_never_reported_as_success(
 
     a, b = pair
     connect_pair(a, b)
-    b.ok("receive_mode.set", {"enabled": True})
     fid = a.import_bytes("a.txt", b"payload", tmp_path)
     response = (
         httpx.Response(200, content=reply.encode())
@@ -529,25 +510,23 @@ def test_a_file_of_exactly_50_mb_crosses_the_network_intact(pair, tmp_path):
 
     a, b = pair
     connect_pair(a, b)
-    b.ok("receive_mode.set", {"enabled": True})
     data = os.urandom(50 * MB)
-    fid = a.import_bytes("limit.mp4", data, tmp_path)
+    fid = a.import_bytes("limit.png", data, tmp_path)
     start = time.monotonic()
     done = a.wait_terminal(send(a, b, [fid]), timeout=120)
     elapsed = time.monotonic() - start
     assert done["status"] == "completed"
     wait_for(lambda: len(received(b)) == 1, what="receiver")
-    (rec,) = received(b).values()
-    assert rec["size"] == 50 * MB
-    assert hashlib.sha256(stored_bytes(b, rec["id"])).digest() == hashlib.sha256(data).digest()
+    ((name, got),) = received(b).items()
+    assert name == "limit.png" and len(got) == 50 * MB
+    assert hashlib.sha256(got).digest() == hashlib.sha256(data).digest()
     print(f"\n50 MB over loopback HTTPS in {elapsed:.1f}s ({50 / elapsed:.0f} MB/s)")
 
 
 def test_a_file_one_byte_over_50_mb_is_refused_before_it_is_ever_sent(pair, tmp_path):
     a, b = pair
     connect_pair(a, b)
-    b.ok("receive_mode.set", {"enabled": True})
-    big = tmp_path / "toobig.mp4"
+    big = tmp_path / "toobig.png"
     with big.open("wb") as f:
         f.truncate(50 * MB + 1)
     out = a.ok("files.add", {"paths": [str(big)]})

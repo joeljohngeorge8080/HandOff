@@ -1,5 +1,5 @@
 // Decides which desktop notifications to show (FR-033) by diffing transfer statuses between
-// polls. Pure; the Tauri notification call lives in main.ts.
+// updates. Pure; the Tauri notification call lives in notifier.ts.
 import type { Transfer } from "./types";
 import { isFinished } from "./rules";
 
@@ -16,11 +16,11 @@ export function noticeFor(t: Transfer): Notice | null {
     case "completed":
       return t.direction === "received"
         ? { title: "HandOff", body: `${files} received from ${peer}.` }
-        : { title: "HandOff", body: `Transfer completed successfully (${files} to ${peer}).` };
+        : { title: "HandOff", body: `Transfer complete: ${files} sent to ${peer}.` };
     case "partially_completed":
-      return { title: "HandOff", body: `Transfer with ${peer} finished, but some files failed.` };
+      return { title: "HandOff", body: `Some files failed to transfer with ${peer}.` };
     case "failed":
-      return { title: "HandOff", body: `Transfer with ${peer} failed.` };
+      return { title: "HandOff", body: `Transfer failed (${peer}).` };
     default:
       return null;
   }

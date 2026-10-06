@@ -1,5 +1,7 @@
 # Deployment
 
+> **Phase 2 note.** Received files are written to the user's chosen folder (default Desktop), outside the app-data directory, so uninstall does not remove them. Linux needs an X11 session or XWayland, and a compositing window manager for the transparent strip.
+
 ## 1. Purpose
 
 This document defines how HandOff Phase 1 is built, packaged, installed, and executed.

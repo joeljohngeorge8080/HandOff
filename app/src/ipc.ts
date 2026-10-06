@@ -26,3 +26,12 @@ export async function core<T>(action: string, payload: Record<string, unknown> =
     throw new CoreRequestError(asCoreError(e));
   }
 }
+
+/** Resize/reposition the edge window (Rust owns the geometry; see src-tauri/src/edge). */
+export function setEdgeMode(mode: "idle" | "armed" | "panel" | "stage"): Promise<void> {
+  return invoke("edge_set_mode", { mode });
+}
+
+export function quitApp(): Promise<void> {
+  return invoke("quit_app");
+}

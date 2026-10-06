@@ -2,6 +2,7 @@
 
 Request:  {"id": <str|int>, "action": "files.list", "payload": {...}}
 Response: {"id": <same>, "result": {...}}  or  {"id": <same>, "error": {code, message, details?}}
+Event:    {"event": "transfer.updated", "data": {...}}  (pushed by the core, no id; ADR-054)
 """
 
 from __future__ import annotations
@@ -46,3 +47,8 @@ def encode_result(req_id: str | int | None, result: dict[str, Any]) -> str:
 
 def encode_error(req_id: str | int | None, error: HandOffError) -> str:
     return json.dumps({"id": req_id, **error.to_dict()})
+
+
+def encode_event(name: str, data: dict[str, Any]) -> str:
+    """A core-to-UI push event. It has no `id`, which is how the UI tells it from a response."""
+    return json.dumps({"event": name, "data": data})

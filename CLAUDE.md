@@ -6,12 +6,21 @@ Fix drift in the docs; don't build around it. Lower levels never silently overri
 
 ## Project Purpose
 HandOff is a **native desktop app** for Windows x64 and Linux x64. It transfers files
-directly between nearby computers on the **same LAN/Wi-Fi**. Phase 1 builds a reliable
-peer-to-peer transfer engine. Phase 2 adds a hand-gesture (computer vision) interface on
-top of it. Core principle (DECISIONS §47): **build the transfer engine first. CV is just
+directly between nearby computers on the **same LAN/Wi-Fi**. Phase 1 built a reliable
+peer-to-peer transfer engine. Phase 2 replaced the gallery UI with the edge drop strip. Phase 3 will add a hand-gesture (computer vision) interface on top of it. Core principle (DECISIONS §47): **build the transfer engine first. CV is just
 another input mechanism later and must never become the foundation.**
 
-## Phase 1 Scope (MVP) — build only this
+## Phase 2 (Edge Transfer UX) — current product (ADR-054/055; supersedes conflicting Phase 1 rules below)
+- The gallery, Send button and Receive Mode are **gone**. HandOff is a thin always-on-top **right-edge** strip: drag files from the OS to the edge, release, and they go to the **one connected trusted peer**. No peer → reject ("No HandOff device connected"); never queue.
+- Allowed types: `.txt .jpg .jpeg .png .pdf` (case-insensitive, ≤ 50 MB). `.exe`/`.mp4` removed. Reject folders, symlinks/shortcuts, non-regular files, and executables renamed to an allowed extension (PE `MZ` / ELF header) — on **both** sender and receiver. A drop is **all-or-nothing**.
+- Pipeline is unchanged: `drop.send` → `files.import` (copy + SHA-256) → `transfer.create` (file IDs) → existing signed TLS protocol. Dropped managed copies are logically deleted when the transfer is terminal; orphans are swept at startup.
+- **Receiver chooses where files land**: setting `receive_directory` (default OS Desktop via `platformdirs`), picked with the native folder dialog. Validated by the receiver only (absolute, existing, writable, outside HandOff's data dir). Never from the network. Files are written with exclusive create (`name(1).ext`, never overwrite) and re-hashed during the copy. Received files are **not** managed storage (no `files` row; `transfer_files.file_id` NULL).
+- `receive_mode` setting is obsolete: keep the row, ignore it, never delete it. `GET /receive-mode`, `RECEIVE_MODE_DISABLED` and the IPC actions are removed.
+- UI layering (keep it): input adapters (OS drag-drop, edge proximity) → ADR-052 semantic events → pure state machine `edge/machine.ts` → view/animations. Success views are reachable **only** from a backend `completed`. The core pushes `transfer.updated` / `connection.changed`; polling is a slow fallback.
+- Phase 3 (not built): camera/CV. It must feed the same semantic events.
+- Window rules: Wayland is forced to XWayland; transparency needs a compositor; Windows is untested by the author.
+
+## Phase 1 Scope (MVP) — historical; where it conflicts with Phase 2 above, Phase 2 wins
 - Tauri desktop window at ~80% opacity. The same app runs on every device; there is no sender/receiver split.
 - Add files through the app's file-add mechanism. Only `.txt .jpg .mp4 .exe` are allowed, and extension matching is case-insensitive.
 - Each file must be **≤ 50 MB** (50 MB = 52,428,800 bytes). Reject larger files with a clear reason.
@@ -102,7 +111,7 @@ Tauri UI ──IPC──► Python Core (File/Device/Discovery/Connection/Transf
 - Distinguish application errors from network errors. Transfers must never block the UI thread.
 - A failed health check isn't proof a peer is offline. Apply retry and timeout first, then mark it offline promptly.
 - Transfer creation takes **file IDs only**. The backend looks up the stored name, size and hash. Never accept client-supplied hashes (ADR-050).
-- Leave `POST /internal/v1/cv/events` (API §42) reserved and **disabled**. CV may never bypass the application state machine. Phase 2 must use only the canonical CV event names in ADR-052:
+- Leave `POST /internal/v1/cv/events` (API §42) reserved and **disabled**. CV may never bypass the application state machine. Phase 3 must use only the canonical CV event names in ADR-052:
   - `pointer_move/click/down/up`, `selection_changed`, `drag_start/move/end`
   - `grab`, `release`, `gesture_detected`, `direction_detected`
 - Device names come from the OS. Users can't edit them in Phase 1.
@@ -136,13 +145,13 @@ Tauri UI ──IPC──► Python Core (File/Device/Discovery/Connection/Transf
 - Production builds include no debug UI, dev endpoints, dev keys or certs, mock devices, or secrets.
 - GitHub Actions release automation is deferred (ADR-044).
 
-## Phase 2 Boundaries — do NOT build in Phase 1
+## Phase 3 (CV) boundaries — do NOT build yet
 Camera, OpenCV, MediaPipe, hand detection, gesture recognition, hand-controlled pointer,
 gesture select/drag/drop, spatial targeting, multiple simultaneous peers, Internet/WAN
 transfer, cloud storage or sync, mobile apps, files over 50 MB, transfer cancellation,
-OS drag-and-drop import, user accounts, a disconnect/untrust UI, auto-update, code
+user accounts, a disconnect/untrust UI, auto-update, code
 signing, and antivirus. "It would be cool if…" doesn't expand scope (REQUIREMENTS §32).
-Phase 2 CV must plug in through the CV Integration Layer **without rewriting** the
+Phase 3 CV must plug in through the CV Integration Layer **without rewriting** the
 transfer engine.
 
 ## Critical Architectural Decisions (`docs/DECISIONS.md`)
@@ -151,7 +160,7 @@ ADR-001 Tauri + Python (not Electron or web) · 002/003 P2P, LAN-only, no server
 008 persistent device ID · 009/040/041 trusted-LAN model, no auth system · 013 auto-receive ·
 015 one active transfer · 016 multiple files = one job · 017 50 MB · 018 four file types ·
 019 SHA-256 · 020/042 never overwrite · 022 separate app storage · 023 logical delete ·
-024/025 audit logs never deleted · 026 no AV · 027 no firewall management · 033 CV in Phase 2 ·
+024/025 audit logs never deleted · 026 no AV · 027 no firewall management · 033 CV in Phase 3 (amended by 054) ·
 046 one peer · 047 switch = internal disconnect, blocked during an active transfer · 048 `public_key` + `is_trusted` ·
 049 hash at import · 050 transfer takes file IDs · 051 manifest with SHA-256 · 052 canonical CV events.
 To change any ADR, follow ADR-045: name the ADR, give the reason and the replacement,
@@ -176,12 +185,12 @@ update the docs. **Never change architecture silently.**
 | CV names `HAND_CLOSED`, `POINTER_MOVE`… (API §39–40, ARCHTECTURE §27) | Superseded by the canonical lowercase names in ADR-052 |
 
 ## Non-Negotiable Rules
-1. Never build Phase 2 features or anything listed under Phase 2 Boundaries.
+1. Never build Phase 3 (CV) features or anything listed under Phase 3 boundaries.
 2. Never add cloud services, a central server, user accounts or authentication, antivirus, firewall changes, or auto-update.
-3. Never accept a file over 50 MB or one outside `.txt .jpg .mp4 .exe`. Check on both sides.
+3. Never accept a file over 50 MB or one outside `.txt .jpg .jpeg .png .pdf`. Check on both sides.
 4. Never overwrite an existing file. Never modify or delete the user's original file.
 5. Never write outside HandOff storage, trust a network-supplied path, or execute a received file.
-6. Never accept transfers from untrusted devices or when Receive Mode is OFF.
+6. Never accept transfers from untrusted devices (there is no Receive Mode any more).
 7. Never send peer traffic in plaintext or skip identity verification.
 8. Never report `completed` before full receipt, validation, SHA-256 verification, final storage, and the DB update.
 9. Never store binaries in SQLite. Never let UI code touch the DB or peer APIs.
