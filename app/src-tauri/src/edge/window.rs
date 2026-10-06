@@ -217,7 +217,10 @@ pub fn spawn_watcher(app: AppHandle) {
                                 }
                             }
                             Action::Proximity(phase) => {
-                                let _ = app.emit("edge-proximity", json!({"phase": phase}));
+                                let _ = app.emit(
+                                    "edge-proximity",
+                                    json!({"phase": phase, "pressed": pressed}),
+                                );
                             }
                         }
                     }
