@@ -92,9 +92,13 @@ class CvSupervisor:
             try:
                 self._preflight()
                 if not model.is_file():
+                    hint = (
+                        "Reinstall HandOff."
+                        if getattr(sys, "frozen", False)
+                        else "Run: python scripts/fetch_hand_model.py"
+                    )
                     raise HandOffError(
-                        "CV_UNAVAILABLE",
-                        "The hand-tracking model is missing. Reinstall HandOff.",
+                        "CV_UNAVAILABLE", f"The hand-tracking model is missing. {hint}"
                     )
             except HandOffError as exc:
                 self._set("error", exc.message, exc.code)
