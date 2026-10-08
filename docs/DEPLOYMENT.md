@@ -1,5 +1,7 @@
 # Deployment
 
+> **Phase 3 note (ADR-056).** The bundle now includes `mediapipe`, OpenCV and `pyautogui` (the unpacked sidecar is about 490 MB, of which mediapipe ~120 MB and OpenCV ~200 MB; trimming it is a follow-up) and the hand-landmarker model, fetched at build time by `scripts/fetch-hand-model.sh` with a pinned SHA-256. No first-run download. Hand control needs a camera and an X11/XWayland session (Linux) or Windows; it is off until the user enables it in the panel.
+
 > **Phase 2 note.** Received files are written to the user's chosen folder (default Desktop), outside the app-data directory, so uninstall does not remove them. Linux needs an X11 session or XWayland, and a compositing window manager for the transparent strip.
 
 ## 1. Purpose

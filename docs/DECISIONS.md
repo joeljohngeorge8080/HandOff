@@ -1218,6 +1218,29 @@ The user decides where their own files land, on their own machine, through a nat
 
 ---
 
+# ADR-056: Hand Control (Phase 3, step 1)
+
+**Status:** Accepted
+
+**Supersedes / amends (ADR-045):** ADR-054 items 2 and 7 (no camera, OpenCV or MediaPipe in Phase 2), ADR-033 and ADR-035 (phase label), CLAUDE.md "Phase 3 boundaries" for hand tracking only, API §38-§42 (the CV channel).
+
+**Decisions:**
+
+1. **Scope.** Phase 3 starts with *hand control*: a webcam hand tracker that moves the OS pointer and presses/releases the primary mouse button (pinch = button down, release = button up, short pinch tap = click). Spatial targeting, multiple peers, files over 50 MB, cancellation, WAN and everything else on the Phase 3 exclusion list stay out of scope.
+2. **The send path is unchanged.** A hand-held drag is a real OS drag. The file still arrives as `OS drop → input/osDrag.ts → edge/machine.ts → drop.send → files.import`, with every validation of ADR-054/055. The camera never names a file, never calls a peer and never calls `transfer.create`. Why not CV-only events: no API can "grab the file under a virtual pointer" on the desktop, so a pure event design would need an in-app file tray, which reverses ADR-054.
+3. **Canonical events.** The tracker also reports ADR-052 events to the core. The UI receives only feedback events (`gesture_detected`, `direction_detected`) with `source: "cv"`. `grab`, `release` and `drag_*` are never forwarded to the state machine, because the OS adapter already reports the real drag and a duplicate `release` without paths would be a false "invalid drop".
+4. **Process model.** The tracker runs as a child process of the core (`python -m handoff --cv-worker`, same bundle). It speaks JSON lines on stdout and exits when its stdin closes. A MediaPipe crash cannot affect transfers. API §42's `POST /internal/v1/cv/events` stays **disabled**: nothing CV-related is reachable on the LAN.
+5. **Opt-in.** The setting `hand_control_enabled` (default `false`, persisted) is the only switch. The camera is opened only while it is on. Frames are processed in memory and are never stored, logged or sent.
+6. **Dependencies (approved by this ADR).** `mediapipe` (brings `opencv-contrib-python` and `numpy`) and `pyautogui`. The hand-landmarker model is fetched at **build time** with a pinned SHA-256 and bundled; the app never downloads it. If it is missing, hand control reports an error and stays off.
+7. **Safety.** If the hand disappears mid-drag, the worker presses Esc (cancelling the OS drag) before releasing the button, so a file is never dropped by accident onto another folder. On exit and crash the supervisor releases the button.
+8. **Limits.** X11/XWayland and Windows only (no native Wayland injection); primary monitor only; Windows untested by the author.
+
+### Rationale
+
+Hand control is one more input mechanism (DECISIONS §47). It drives the same OS drag the mouse does, so the transfer engine, trust model and validation are untouched.
+
+---
+
 # Documentation Authority
 
 When documentation conflicts, use this priority:

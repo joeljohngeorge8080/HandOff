@@ -7,7 +7,7 @@ Fix drift in the docs; don't build around it. Lower levels never silently overri
 ## Project Purpose
 HandOff is a **native desktop app** for Windows x64 and Linux x64. It transfers files
 directly between nearby computers on the **same LAN/Wi-Fi**. Phase 1 built a reliable
-peer-to-peer transfer engine. Phase 2 replaced the gallery UI with the edge drop strip. Phase 3 will add a hand-gesture (computer vision) interface on top of it. Core principle (DECISIONS §47): **build the transfer engine first. CV is just
+peer-to-peer transfer engine. Phase 2 replaced the gallery UI with the edge drop strip. Phase 3 adds a hand-gesture (computer vision) interface on top of it; step 1 (opt-in hand control, ADR-056) is being built. Core principle (DECISIONS §47): **build the transfer engine first. CV is just
 another input mechanism later and must never become the foundation.**
 
 ## Phase 2 (Edge Transfer UX) — current product (ADR-054/055; supersedes conflicting Phase 1 rules below)
@@ -17,7 +17,7 @@ another input mechanism later and must never become the foundation.**
 - **Receiver chooses where files land**: setting `receive_directory` (default OS Desktop via `platformdirs`), picked with the native folder dialog. Validated by the receiver only (absolute, existing, writable, outside HandOff's data dir). Never from the network. Files are written with exclusive create (`name(1).ext`, never overwrite) and re-hashed during the copy. Received files are **not** managed storage (no `files` row; `transfer_files.file_id` NULL).
 - `receive_mode` setting is obsolete: keep the row, ignore it, never delete it. `GET /receive-mode`, `RECEIVE_MODE_DISABLED` and the IPC actions are removed.
 - UI layering (keep it): input adapters (OS drag-drop, edge proximity) → ADR-052 semantic events → pure state machine `edge/machine.ts` → view/animations. Success views are reachable **only** from a backend `completed`. The core pushes `transfer.updated` / `connection.changed`; polling is a slow fallback.
-- Phase 3 (not built): camera/CV. It must feed the same semantic events.
+- Phase 3 step 1 (ADR-056): opt-in hand control. A child process (`handoff --cv-worker`, `backend/src/handoff/cv/`) tracks the hand with MediaPipe and moves the OS pointer; a held pinch is the mouse button, so a hand drag is an ordinary OS drag into the existing drop path. It never calls transfer APIs. Setting `hand_control_enabled` (default off) is the only switch; frames are never stored or sent; the model is bundled, never downloaded. UI gets only `gesture_detected`/`direction_detected` with `source: "cv"`.
 - Window rules: Wayland is forced to XWayland; transparency needs a compositor; Windows is untested by the author.
 
 ## Phase 1 Scope (MVP) — historical; where it conflicts with Phase 2 above, Phase 2 wins
@@ -145,9 +145,9 @@ Tauri UI ──IPC──► Python Core (File/Device/Discovery/Connection/Transf
 - Production builds include no debug UI, dev endpoints, dev keys or certs, mock devices, or secrets.
 - GitHub Actions release automation is deferred (ADR-044).
 
-## Phase 3 (CV) boundaries — do NOT build yet
-Camera, OpenCV, MediaPipe, hand detection, gesture recognition, hand-controlled pointer,
-gesture select/drag/drop, spatial targeting, multiple simultaneous peers, Internet/WAN
+## Phase 3 (CV) boundaries — beyond ADR-056, do NOT build yet
+(Allowed since ADR-056: camera, OpenCV, MediaPipe, hand detection, gesture recognition, hand-controlled pointer and gesture drag/drop, in the form described under Phase 2/3 above.)
+Still out: spatial targeting, multiple simultaneous peers, Internet/WAN
 transfer, cloud storage or sync, mobile apps, files over 50 MB, transfer cancellation,
 user accounts, a disconnect/untrust UI, auto-update, code
 signing, and antivirus. "It would be cool if…" doesn't expand scope (REQUIREMENTS §32).
@@ -185,7 +185,7 @@ update the docs. **Never change architecture silently.**
 | CV names `HAND_CLOSED`, `POINTER_MOVE`… (API §39–40, ARCHTECTURE §27) | Superseded by the canonical lowercase names in ADR-052 |
 
 ## Non-Negotiable Rules
-1. Never build Phase 3 (CV) features or anything listed under Phase 3 boundaries.
+1. Never build anything listed under Phase 3 boundaries. Hand control is allowed only as ADR-056 defines it (opt-in, OS-pointer, never calls transfer APIs).
 2. Never add cloud services, a central server, user accounts or authentication, antivirus, firewall changes, or auto-update.
 3. Never accept a file over 50 MB or one outside `.txt .jpg .jpeg .png .pdf`. Check on both sides.
 4. Never overwrite an existing file. Never modify or delete the user's original file.
