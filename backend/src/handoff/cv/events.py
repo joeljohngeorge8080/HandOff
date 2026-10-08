@@ -1,7 +1,9 @@
-"""Canonical computer-vision event names (ADR-052). Reserved for Phase 2.
+"""Canonical computer-vision event names (ADR-052).
 
-Nothing in Phase 1 produces or consumes these; the integration layer is disabled and the
-CV module may never bypass the application state machine (API §41-42).
+Hand control (ADR-056) reports only `gesture_detected` / `direction_detected` to the UI, over the
+supervisor's local pipe. `CV_INTEGRATION_ENABLED` stays False: it guards the LAN-facing
+`POST /internal/v1/cv/events` endpoint (API §42), which must never exist. CV may never bypass
+the application state machine (API §41).
 """
 
 from __future__ import annotations

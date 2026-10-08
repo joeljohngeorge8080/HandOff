@@ -9,6 +9,7 @@ import { basename } from "./anim/fileGlyph";
 import { EdgeController } from "./edge/controller";
 import { EdgeView } from "./edge/view";
 import { InteractionBus } from "./interaction/bus";
+import { attachCv } from "./input/cv";
 import { attachOsDrag } from "./input/osDrag";
 import { attachProximity } from "./input/proximity";
 import { core, quitApp, setEdgeMode } from "./ipc";
@@ -112,6 +113,7 @@ async function boot(): Promise<void> {
     height: window.innerHeight * window.devicePixelRatio,
   }));
   await attachProximity(listen, (i) => controller.dispatch(i), bus);
+  await attachCv(listen, bus, (status) => panel.setHandControl(status));
 
   if (import.meta.env.DEV) {
     // Dev builds only: lets a script replay inputs (see src-tauri/src/dev.rs).

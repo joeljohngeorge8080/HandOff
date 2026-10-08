@@ -14,7 +14,7 @@ from handoff.destination import default_receive_dir, validate_receive_dir
 from handoff.errors import HandOffError
 
 # Keys the UI may change. device_name is derived (DATABASE §12); schema_version is internal.
-USER_EDITABLE = frozenset({"history_retention", "receive_directory"})
+USER_EDITABLE = frozenset({"history_retention", "receive_directory", "hand_control_enabled"})
 # `receive_mode` is obsolete since ADR-055: old databases keep the row, nothing reads it.
 _HIDDEN = frozenset({"schema_version", "receive_mode"})
 
@@ -38,6 +38,8 @@ class SettingsService:
             repo = SettingsRepository(s)
             if repo.get("history_retention") is None:
                 repo.set("history_retention", DEFAULT_HISTORY_RETENTION_DAYS)
+            if repo.get("hand_control_enabled") is None:
+                repo.set("hand_control_enabled", False)  # opt-in camera (ADR-056)
             if repo.get("device_name") is None:
                 repo.set("device_name", derive_device_name(hostname))
 
@@ -84,6 +86,9 @@ class SettingsService:
         if key == "receive_directory":
             self.set_receive_directory(value)
             return
+        if key == "hand_control_enabled":
+            self.set_hand_control(value)
+            return
         if key == "history_retention" and (
             isinstance(value, bool) or not isinstance(value, int) or value < 0
         ):
@@ -92,3 +97,20 @@ class SettingsService:
             )
         with self.db.session() as s:
             SettingsRepository(s).set(key, value)
+
+    def hand_control_enabled(self) -> bool:
+        return self.get("hand_control_enabled") is True
+
+    def set_hand_control(self, value: object) -> bool:
+        if not isinstance(value, bool):
+            raise HandOffError("INVALID_REQUEST", "hand_control_enabled must be true or false.")
+        with self.db.session() as s:
+            repo = SettingsRepository(s)
+            if repo.get("hand_control_enabled") is not value:
+                repo.set("hand_control_enabled", value)
+                record_event(
+                    s,
+                    AuditEvent.HAND_CONTROL_ENABLED if value else AuditEvent.HAND_CONTROL_DISABLED,
+                    "Hand control turned on." if value else "Hand control turned off.",
+                )
+        return value

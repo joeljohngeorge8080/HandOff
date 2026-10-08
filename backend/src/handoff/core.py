@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 
 from handoff.audit import AuditEvent, record_event
+from handoff.cv.supervisor import CvSupervisor
 from handoff.db.engine import Database, open_database
 from handoff.db.repositories import TransferRepository
 from handoff.db.schema import init_schema
@@ -30,6 +31,7 @@ class Core:
         self.files: FileManager
         self.history: HistoryService
         self.events = EventBus()
+        self.hand_control = CvSupervisor(self.events)
 
     def start(self) -> None:
         self.paths.ensure()
@@ -54,6 +56,7 @@ class Core:
             record_event(s, AuditEvent.APPLICATION_STARTED, "HandOff started.")
 
     def close(self) -> None:
+        self.hand_control.stop()  # releases the camera and any held mouse button first
         with self.db.session() as s:
             record_event(s, AuditEvent.APPLICATION_STOPPED, "HandOff stopped.")
         self.db.dispose()

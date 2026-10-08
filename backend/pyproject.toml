@@ -10,7 +10,9 @@ dependencies = [
     "cryptography>=50.0.2",
     "fastapi>=0.142.2",
     "httpx>=0.28.1",
+    "mediapipe>=1.1.0",
     "platformdirs>=4.12.2",
+    "pyautogui>=0.9.54",
     "sqlalchemy>=2.1.1",
     "uvicorn>=0.54.0",
     "zeroconf>=0.151.5",
@@ -59,3 +61,7 @@ python_version = "3.13"
 strict = true
 files = ["src"]
 plugins = []
+
+[[tool.mypy.overrides]]
+module = ["mediapipe", "mediapipe.*", "cv2", "pyautogui"]
+ignore_missing_imports = true

@@ -38,10 +38,17 @@ export interface Transfer {
   files: TransferFile[];
 }
 
+export interface HandControl {
+  state: "off" | "starting" | "tracking" | "no_hand" | "error";
+  message: string;
+  code?: string;
+}
+
 export interface Snapshot {
   device: { device_id: string; device_name: string };
   receive_directory: string;
   connection: Connection;
+  hand_control?: HandControl;
   active_transfer: Transfer | null;
   recent_history: Transfer[];
 }

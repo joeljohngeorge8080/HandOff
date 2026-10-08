@@ -55,3 +55,35 @@ FAILURE_WINDOW_SECONDS = 60.0
 CONNECT_TIMEOUT_SECONDS = 5.0
 REQUEST_TIMEOUT_SECONDS = 15.0
 UPLOAD_RESPONSE_TIMEOUT_SECONDS = 180.0
+
+# ----- Hand control (ADR-056) -------------------------------------------------------------
+
+# Pinch = thumb-tip to index-tip distance divided by hand size (wrist to middle MCP).
+CV_PINCH_ON = 0.22  # fingers closer than this press the button
+CV_PINCH_OFF = 0.32  # fingers further apart than this (for CV_RELEASE_FRAMES) release it
+CV_RELEASE_FRAMES = 2
+CV_LOST_GRACE_SECONDS = 0.30  # hand missing longer than this counts as lost
+CV_DRAG_RADIUS_PX = 12  # moving this far while pressed makes it a drag (Esc on loss)
+
+# Camera-normalised window that maps onto the whole screen (the rest is dead margin).
+CV_X_RANGE = (0.15, 0.85)
+CV_Y_RANGE = (0.15, 0.85)
+
+# One-euro filter on the target, then exponential follow in the control loop.
+CV_MIN_CUTOFF = 1.5
+CV_BETA = 0.012
+CV_D_CUTOFF = 1.0
+CV_FOLLOW_TAU = 0.020
+CV_CONTROL_HZ = 125
+
+CV_CAMERA_INDEX = 0
+CV_CAMERA_SIZE = (640, 480)
+CV_CAMERA_FPS = 60
+
+# Worker -> core pipe: line cap, event rate cap, and how often status is repeated.
+CV_MAX_LINE_BYTES = 4096
+CV_MAX_EVENTS_PER_SEC = 20
+CV_STATUS_INTERVAL_SECONDS = 1.0
+
+# Model fetched at build time (scripts/fetch-hand-model.sh); never downloaded at runtime.
+CV_MODEL_FILENAME = "hand_landmarker.task"

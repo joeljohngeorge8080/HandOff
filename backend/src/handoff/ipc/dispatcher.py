@@ -45,6 +45,7 @@ class Dispatcher:
             "settings.set": self._settings_set,
             "history.list": self._history_list,
             "status.snapshot": self._status_snapshot,
+            "cv.status": self._cv_status,
             "devices.discover": self._devices_discover,
             "devices.list": self._devices_list,
             "devices.connect": self._devices_connect,
@@ -110,7 +111,15 @@ class Dispatcher:
         if "value" not in p:
             raise HandOffError("INVALID_REQUEST", "'value' is required.")
         self.core.settings.set(key, p["value"])
+        if key == "hand_control_enabled":
+            if self.core.settings.hand_control_enabled():
+                self.core.hand_control.start()
+            else:
+                self.core.hand_control.stop()
         return {"settings": self.core.settings.get_all()}
+
+    def _cv_status(self, _p: dict[str, Any]) -> dict[str, Any]:
+        return {"hand_control": self.core.hand_control.status()}
 
     # ----- history and status -------------------------------------------------------------
 
@@ -131,6 +140,7 @@ class Dispatcher:
                 if self.network
                 else {"connected": False, "device": None}
             ),
+            "hand_control": self.core.hand_control.status(),
             "active_transfer": self.core.history.active(),
             "recent_history": self.core.history.list(10, 0),
         }

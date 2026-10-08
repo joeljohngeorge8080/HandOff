@@ -166,7 +166,8 @@ export function reduce(m: Model, input: Input): Step {
       return m.view.kind === "panel" ? withView(m, { kind: "idle" }, [{ type: "window", mode: "idle" }]) : stay(m);
     case "timer":
       return onTimer(m, input.token);
-    // Reserved for the computer-vision phase and for pointer detail the view reads directly.
+    // Hand-control feedback (gesture_detected, direction_detected) and pointer detail the view
+    // reads directly. A hand-held drag arrives as a real OS drag, so nothing else is needed here.
     default:
       return stay(m);
   }
