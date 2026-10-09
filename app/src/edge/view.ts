@@ -3,7 +3,7 @@
 // The view reads only the model (plus the names of the files being moved, for the tokens). It
 // never decides anything: what is shown is a pure function of the state, and a state is only
 // ever entered because the machine (and ultimately the core) said so.
-import { createChip, shownChips } from "../anim/fileGlyph";
+import { createChip, heldChips, shownChips, stackOffsets } from "../anim/fileGlyph";
 import { Motion } from "../anim/motion";
 import { el } from "../dom";
 import { type Model, type View, type ViewKind, labelFor } from "./machine";
@@ -27,6 +27,7 @@ const TONE: Record<ViewKind, Tone> = {
   panel: "neutral",
   hand_grab: "ready",
   hand_release: "busy",
+  holding: "ready",
 };
 
 const WIDE: ReadonlySet<ViewKind> = new Set([
@@ -115,6 +116,14 @@ export class EdgeView {
     this.pill.textContent = isWide(v) ? text : "";
     root.setAttribute("aria-label", text || "HandOff");
 
+    if (was.kind === "holding" && v.kind !== "holding") this.clearChips();
+    if (v.kind === "holding") {
+      // A new grab replaces the chips even though the view kind is the same.
+      if (was.kind !== "holding" || was.names.join("\n") !== v.names.join("\n") || was.count !== v.count) {
+        this.showHeld(v.names, v.count);
+      }
+      return;
+    }
     if (v.kind === was.kind) return;
     this.onEnter(v, was);
   }
@@ -177,6 +186,23 @@ export class EdgeView {
       default:
         break;
     }
+  }
+
+  /** Static chips for what the hand is holding, stacked beside the gateway. */
+  private showHeld(names: readonly string[], count: number): void {
+    this.motion.cancelAll();
+    this.clearChips();
+    const { shown, extra } = heldChips(names, count);
+    const offsets = stackOffsets(shown.length, 40);
+    this.chips = shown.map((n, i) => {
+      const chip = createChip(n, i === shown.length - 1 ? extra : 0);
+      chip.classList.add("held");
+      chip.style.setProperty("--y", `${offsets[i] ?? 0}px`);
+      return chip;
+    });
+    this.lane.replaceChildren(...this.chips);
+    // Fade in on the next frame so the transition runs.
+    requestAnimationFrame(() => this.chips.forEach((c) => c.classList.add("shown")));
   }
 
   private spawnChips(): void {

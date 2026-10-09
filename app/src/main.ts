@@ -10,6 +10,7 @@ import { EdgeController } from "./edge/controller";
 import { EdgeView } from "./edge/view";
 import { InteractionBus } from "./interaction/bus";
 import { attachCv } from "./input/cv";
+import { attachHeld } from "./input/held";
 import { attachOsDrag } from "./input/osDrag";
 import { attachProximity } from "./input/proximity";
 import { core, quitApp, setEdgeMode } from "./ipc";
@@ -114,6 +115,7 @@ async function boot(): Promise<void> {
   }));
   await attachProximity(listen, (i) => controller.dispatch(i), bus);
   await attachCv(listen, bus, (status) => panel.setHandControl(status));
+  await attachHeld(listen, (i) => controller.dispatch(i));
 
   if (import.meta.env.DEV) {
     // Dev builds only: lets a script replay inputs (see src-tauri/src/dev.rs).

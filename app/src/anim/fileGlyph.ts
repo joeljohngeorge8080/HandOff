@@ -44,3 +44,15 @@ export function createChip(name: string, extra = 0): HTMLElement {
   }
   return chip;
 }
+
+/** The chips for what the hand holds: up to MAX_CHIPS names, the rest counted from the real total
+ * (the core may send fewer names than files). */
+export function heldChips(names: readonly string[], count: number): { shown: string[]; extra: number } {
+  const shown = names.slice(0, MAX_CHIPS);
+  return { shown, extra: Math.max(0, count - shown.length) };
+}
+
+/** Vertical offsets that stack `n` chips evenly around the centre line. */
+export function stackOffsets(n: number, step: number): number[] {
+  return Array.from({ length: Math.max(0, n) }, (_, i) => (i - (n - 1) / 2) * step);
+}

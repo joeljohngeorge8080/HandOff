@@ -1299,6 +1299,22 @@ The user asked for a gesture that copies a selected file and sends it. A pure-CV
 
 ---
 
+# ADR-060: Show What Is Held, and Hold a Picture Copied in a Browser
+
+**Status:** Accepted
+
+**Amends (ADR-045):** ADR-057 (what a grab can hold), API §42 (a new local push event).
+
+**Decisions:**
+
+1. **The strip shows what the hand is holding.** While a grab is held the edge strip stays up with a chip per file (name, type badge, `+N` for the rest) and the label "Holding N files". The core pushes `hand.held` `{names, count}` when a grab starts, replaces it on a new grab, and pushes `{names: [], count: 0}` when the grab ends (cancelled, sent, expired). The UI follows the core; it has no timer of its own for this. The event carries bare file names (cleaned, at most 20 of at most 120 characters, plus the real count), never paths.
+2. **A picture copied in a browser can be held.** A browser's "Copy image" puts a picture on the clipboard, not a file. If a grab finds no files but finds a picture, the core saves it as a PNG in its own scratch directory (`temp/held/`, generated name `image-YYYYMMDD-HHMMSS.png`, exclusive create, user-only permissions) and holds that file. Linux reads the `image/png` clipboard format (tkinter); Windows reads the registered `PNG` format. Anything that is not a real PNG (signature check, trimmed at `IEND`) or is over 50 MB is refused (`copy_empty` / `copy_failed`). Files on the clipboard always win over a picture.
+3. **The picture then travels exactly like any other file**: `drop.send` validates it (type, size, executable header) and imports a managed copy, so nothing about the transfer path changes. The scratch copy is deleted when the grab is cancelled, replaced, expires or has been handed to the send.
+4. **The grab itself is unchanged**: it still only presses Ctrl+C. The user must have the image selected so the browser copies it (for example Ctrl+A on an image-only tab, or "Copy image" once). Right-click automation and Ctrl+A fallbacks were considered and rejected: they inject input into whatever window has focus.
+5. **Limits.** Windows pictures arrive only if the browser publishes the `PNG` clipboard format (Chrome, Edge and Firefox do); a bitmap-only (`CF_DIB`) clipboard is not converted. A very large clipboard picture is read into memory before it is refused.
+
+---
+
 # Documentation Authority
 
 When documentation conflicts, use this priority:
