@@ -26,7 +26,7 @@ describe("timeline", () => {
     const tl = new Timeline();
     tl.add("grab", 0, 0, 1000);
     expect(() => tl.shapes(500)).not.toThrow();
-    expect(tl.shapes(500).every((s) => Number.isFinite(s.r))).toBe(true);
+    expect(tl.shapes(500).every((s) => Number.isFinite(s.alpha))).toBe(true);
   });
 });
 

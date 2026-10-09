@@ -19,8 +19,8 @@ use super::geometry::Screen;
 use super::window::read_screens;
 
 pub const LABEL: &str = "fx";
-/// The longest effect is about 1.1 s; the window is hidden shortly after.
-const HIDE_AFTER_MS: u64 = 1600;
+/// The longest effect (ADR-062) is 1.7 s; the window is hidden shortly after.
+const HIDE_AFTER_MS: u64 = 2000;
 /// Time for the window manager to map the window before the effect starts drawing.
 const MAP_DELAY_MS: u64 = 50;
 /// Bumped for every effect, so only the newest one gets to hide the window.

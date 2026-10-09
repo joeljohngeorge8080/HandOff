@@ -1285,7 +1285,7 @@ The user asked for a gesture that copies a selected file and sends it. A pure-CV
 
 # ADR-059: Full-Screen Gesture Effects Overlay
 
-**Status:** Accepted
+**Status:** Accepted. The two effects it describes (bubble, burst and wavelets) are superseded by ADR-062; the overlay window itself is unchanged.
 
 **Why:** The palm grab and release deserve a visible reaction where the user is working, not only on the thin edge strip. The two effects (a liquid-glass bubble that implodes on grab, a burst plus five neon wavelets on release) were prototyped in a standalone PyQt6 script; PyQt6 would be a second GUI toolkit and a new dependency, so they are ported into the existing Tauri/TypeScript UI instead.
 
@@ -1332,6 +1332,21 @@ The user asked for a gesture that copies a selected file and sends it. A pure-CV
 **Reason:** the hand-gesture handoff should feel instant: a picture copied on laptop 1 appears on laptop 2's screen.
 
 **Accepted risk:** a viewer (image decoder, PDF reader) parses data from a trusted LAN peer. The trust model already lets a trusted peer put those files on the desktop; auto-open only removes the user's double-click. Hence opt-in, off by default, allowed types only, and a cap on windows.
+
+---
+
+# ADR-062: Hand-and-Photo Effects Replace the Bubble and Wavelets
+
+**Status:** Accepted
+
+**Amends (ADR-045):** ADR-059 decision 1's artwork only. The overlay window, its click-through rules, the `fx-play` event and its validation, the cap of 4 running effects and the reduced-motion rule are unchanged.
+
+**Decisions:**
+
+1. **New artwork.** `animation/grab_and_drop.py` (a pygame storyboard: an open hand closes over a photo to grab it, a closed hand carries it and opens to drop it) replaces the liquid-glass bubble and the burst with neon wavelets. pygame is not added: the drawing is ported to the existing TypeScript canvas, as ADR-059 did for PyQt.
+2. **Two clips, not the whole scene.** `grab` plays the part where the open hand closes into a fist, the photo shrinks and lifts off a dashed ghost of its spot, with a ripple. `drop` plays a closed hand carrying a half-size photo that opens, with the photo growing and landing and a ripple. Both play at the cursor. The storyboard's phone, tablet and captions are not used.
+3. **Same pipeline.** `effects.ts` stays pure geometry (hand, photo, ghost and ring shapes); `art.ts` draws them. The hand and photo are painted once off-screen and then scaled and faded, so a translucent hand has no seams. Durations are 1.3 s (grab) and 1.7 s (drop); the window hides 2.0 s after an effect starts.
+4. The old effect code and its tests are removed. The prototype scripts under `animation/` are not part of the build.
 
 ---
 
