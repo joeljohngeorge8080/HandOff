@@ -11,5 +11,5 @@ def test_cv_event_names_match_adr_052():
     }  # fmt: skip
 
 
-def test_cv_integration_is_disabled_in_phase_1():
+def test_the_lan_facing_cv_endpoint_stays_disabled():  # API §42 / ADR-056
     assert CV_INTEGRATION_ENABLED is False

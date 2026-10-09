@@ -1,5 +1,7 @@
 # API
 
+> **Phase 3 amendment (ADR-056).** The CV channel of §38-§42 is a **local pipe** between the core and its `--cv-worker` child process (JSON lines on the worker's stdout; the worker exits when its stdin closes). `POST /internal/v1/cv/events` stays **disabled** and nothing CV-related is exposed on the LAN. New local IPC: `cv.status` -> `{state: off|starting|tracking|no_hand|error, message?}`; `settings.set` accepts key `hand_control_enabled` (boolean; anything else is `INVALID_REQUEST`) and starts/stops the worker; `status.snapshot` carries `hand_control`. New core-to-UI push events: `cv.status` and `cv.event` (`{event, ...}` with a canonical ADR-052 name, only `gesture_detected` / `direction_detected` are forwarded; ADR-057: the worker's `grab` / `release` lines are consumed by the core, which reads the OS clipboard and calls `drop.send`, and reports `copied` / `copy_empty` / `copy_failed` / `copy_cancelled` / `claimed` / `claim_failed` / `sent` / `send_failed` as `gesture_detected`). **ADR-058:** `grab` holds on the grabbing device; `release` there only cancels; on the other device it sends the signed `POST /api/v1/handoff/claim` (§20a) to its connected peer, whose answer starts the transfer. New error codes (IPC only): `CV_UNAVAILABLE` (dependency or model missing), `CV_UNSUPPORTED_SESSION` (native Wayland), `CV_CAMERA_UNAVAILABLE`, `CLIPBOARD_UNAVAILABLE` (internal, only reported as `copy_failed`).
+
 > **Phase 2 amendment (ADR-055) — breaking.** Removed: `GET /api/v1/receive-mode` (§13), the `receive_mode` field of `GET /api/v1/device`, the Receive Mode check in §15/§16, the IPC actions `receive_mode.get` / `receive_mode.set`, and the error code `RECEIVE_MODE_DISABLED`. Allowed extensions are `.txt .jpg .jpeg .png .pdf`. The receiver writes to its own `receive_directory`; an invalid one returns `RECEIVER_NOT_READY`. New local IPC actions (never exposed on the LAN): `drop.inspect`, `drop.send`, and `settings.set` with key `receive_directory`. New core-to-UI push events: `transfer.updated`, `connection.changed`. Peers must run 0.2.x or later.
 
 > **Phase 2 local IPC additions (ADR-054; never exposed on the LAN).**
@@ -615,6 +617,32 @@ partially_completed
 
 ---
 
+# 20a. Handoff Claim (hand COPY gesture, ADR-058)
+
+## POST `/api/v1/handoff/claim`
+
+Sent by the device the user's closed hand was carried to, to the device that grabbed. Signed like every route (API §43); the caller must be the connected trusted peer. The body is ignored: the caller is identified only by its signature.
+
+The holder replies only if it still holds a fresh grab (at most 20 s old), then starts an ordinary transfer to the caller through its normal `drop.send` pipeline (every validation of ADR-054/055 applies) and answers right away; progress is then the usual transfer flow.
+
+### Response `202`
+
+```json
+{ "transfer_id": "tr_01JABC789" }
+```
+
+### Errors
+
+| Status | Code | When |
+|---|---|---|
+| 409 | `NOTHING_HELD` | the holder has no grab, it expired, or it was already used or cancelled |
+| 404 | `DEVICE_NOT_FOUND` | the caller is not the holder's connected peer |
+| 409 | `INVALID_STATE` | a transfer is already active |
+| 4xx | `FILE_TYPE_NOT_SUPPORTED`, `FILE_TOO_LARGE`, `INVALID_FILE`, ... | the held files fail validation (all-or-nothing) |
+| 401/403 | `INVALID_SIGNATURE`, `DEVICE_NOT_TRUSTED`, ... | unsigned or untrusted caller |
+
+---
+
 # 21. Transfer Progress
 
 The Tauri UI never calls the peer API directly.
@@ -1002,6 +1030,9 @@ RATE_LIMITED
 ```text
 INSUFFICIENT_STORAGE
 INVALID_PATH
+CV_UNAVAILABLE
+CV_UNSUPPORTED_SESSION
+CV_CAMERA_UNAVAILABLE
 INVALID_HASH
 ```
 
@@ -1010,6 +1041,7 @@ INVALID_HASH
 ```text
 INVALID_REQUEST
 INVALID_STATE
+NOTHING_HELD
 INTERNAL_ERROR
 ```
 

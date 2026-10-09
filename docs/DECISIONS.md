@@ -1218,6 +1218,71 @@ The user decides where their own files land, on their own machine, through a nat
 
 ---
 
+# ADR-056: Hand Control (Phase 3, step 1)
+
+**Status:** Accepted
+
+**Supersedes / amends (ADR-045):** ADR-054 items 2 and 7 (no camera, OpenCV or MediaPipe in Phase 2), ADR-033 and ADR-035 (phase label), CLAUDE.md "Phase 3 boundaries" for hand tracking only, API §38-§42 (the CV channel).
+
+**Decisions:**
+
+1. **Scope.** Phase 3 starts with *hand control*: a webcam hand tracker that moves the OS pointer and presses/releases the primary mouse button (pinch = button down, release = button up, short pinch tap = click). Spatial targeting, multiple peers, files over 50 MB, cancellation, WAN and everything else on the Phase 3 exclusion list stay out of scope.
+2. **The send path is unchanged.** A hand-held drag is a real OS drag. The file still arrives as `OS drop → input/osDrag.ts → edge/machine.ts → drop.send → files.import`, with every validation of ADR-054/055. The camera never names a file, never calls a peer and never calls `transfer.create`. (Amended by ADR-057: the core may start the same pipeline after a validated `release` event.) Why not CV-only events: no API can "grab the file under a virtual pointer" on the desktop, so a pure event design would need an in-app file tray, which reverses ADR-054.
+3. **Canonical events.** The tracker also reports ADR-052 events to the core. The UI receives only feedback events (`gesture_detected`, `direction_detected`) with `source: "cv"`. `grab`, `release` and `drag_*` are never forwarded to the state machine, because the OS adapter already reports the real drag and a duplicate `release` without paths would be a false "invalid drop".
+4. **Process model.** The tracker runs as a child process of the core (`python -m handoff --cv-worker`, same bundle). It speaks JSON lines on stdout and exits when its stdin closes. A MediaPipe crash cannot affect transfers. API §42's `POST /internal/v1/cv/events` stays **disabled**: nothing CV-related is reachable on the LAN.
+5. **Opt-in.** The setting `hand_control_enabled` (default `false`, persisted) is the only switch. The camera is opened only while it is on. Frames are processed in memory and are never stored, logged or sent.
+6. **Dependencies (approved by this ADR).** `mediapipe` (brings `opencv-contrib-python` and `numpy`) and `pyautogui`. The hand-landmarker model is fetched at **build time** with a pinned SHA-256 and bundled; the app never downloads it. If it is missing, hand control reports an error and stays off.
+7. **Safety.** If the hand disappears mid-drag, the worker presses Esc (cancelling the OS drag) before releasing the button, so a file is never dropped by accident onto another folder. On exit and crash the supervisor releases the button.
+8. **Limits.** X11/XWayland and Windows only (no native Wayland injection); primary monitor only; Windows untested by the author.
+9. **Pointer model (amended, ADR-045).** The cursor is *relative*, like a touchpad: it moves by the change in hand position times a gain that rises with hand speed (slow = precise, a brisk flick crosses the screen). Taking the hand out of view is "lifting the finger": when it returns the cursor continues from where it was (resynced from the real cursor) and does not jump to the hand. This replaces the first version's absolute mapping of the camera frame onto the screen, which forced the hand to travel across the whole frame.
+
+### Rationale
+
+Hand control is one more input mechanism (DECISIONS §47). It drives the same OS drag the mouse does, so the transfer engine, trust model and validation are untouched.
+
+---
+
+# ADR-057: Pointing-Only Cursor and the COPY Gesture (Phase 3, step 2)
+
+**Status:** Accepted (decisions 3 and 4 amended by ADR-058)
+
+**Supersedes / amends (ADR-045):** ADR-056 decision 1 (pointer moves whenever a hand is visible), decision 2 and the statement "never calls transfer APIs" (the send path gains a second trigger), decision 3 (`grab` / `release` are now consumed by the core).
+
+**Decisions:**
+
+1. **Pointing-only cursor.** The cursor follows the hand only while the hand *points*: index finger extended, middle, ring and pinky curled. An index curled into a pinch with the thumb still counts (it is the click), a fist does not. The pose must hold briefly (on) and be lost briefly (off), so a flicker does not stutter the cursor. Leaving the pose is a touchpad "lift": the cursor stays and resumes from where it was. A pinch already in progress keeps following, so a drag never freezes.
+2. **Click and drag are unchanged.** Index + thumb touching is the primary button. Holding the pinch while moving is a drag/select. They only start while pointing.
+3. **COPY gesture.** Open palm then closed palm (held ~0.25 s each, within 1.5 s) is a **grab**: the worker presses Ctrl+C (plain OS input, like the pointer) so the file manager copies the selection. Closed then open palm is a **release**: it sends what was copied. Anywhere, with no spatial targeting: the destination is always the one connected peer (ADR-046). The hand may leave the camera view while it carries the grab. A grab expires after 20 s; after a release there is a 2 s cooldown. Release with no prior grab does nothing.
+4. **The worker still never names a file and never calls a peer.** It reports only `grab` / `release` (ADR-052 names). The **core** then reads the file list from the OS clipboard (`cv/clipboard.py`: Windows `CF_HDROP` via ctypes; Linux `text/uri-list` / `x-special/gnome-copied-files` via tkinter, no new dependency) and calls the existing `drop.send` (`files.import` -> `transfer.create` -> signed TLS). Every ADR-054/055 rule applies unchanged on both sides: allowed types, <= 50 MB, no folders/symlinks/renamed executables, all-or-nothing, no peer = rejected (never queued), one active transfer.
+5. **Clipboard is untrusted.** Only absolute local `file:` URIs are accepted; the result goes through the normal drop validation. The clipboard is read only after a grab from the worker, never otherwise, and never stored or logged.
+6. **Feedback.** The worker reports `palm_grab` / `palm_release` the moment the palm closes / opens, and the edge strip plays a short grab (pinch in) or release (swell out) animation; they are feedback only, never a transfer state, and never interrupt a drag or a transfer. The core publishes `gesture_detected` with `copied`, `copy_empty`, `copy_failed`, `sent`, `send_failed` (`source: "cv"` in the UI). `grab` / `release` are not forwarded to the UI state machine.
+7. **Known limits.** If nothing is selected when the hand grabs, Ctrl+C copies nothing and an *earlier* clipboard file list could be picked up; it is still fully validated and the user made the gesture. Ctrl+C goes to the focused window (a terminal would receive an interrupt). Linux needs `tkinter` in the bundled Python (checked at runtime: `CLIPBOARD_UNAVAILABLE`). Windows path untested by the author.
+
+### Rationale
+
+The user asked for a gesture that copies a selected file and sends it. A pure-CV design cannot see the OS selection, and the existing drop path already holds every validation, so the gesture only produces the input (Ctrl+C) and a trigger; the engine is untouched.
+
+---
+
+# ADR-058: Grab on One Laptop, Release on the Other (claim protocol)
+
+**Status:** Accepted
+
+**Supersedes / amends (ADR-045):** ADR-057 decisions 3 and 4 (a release on the grabbing laptop sent the files; "anywhere" meant the grabbing laptop's own camera), API §5-27 (one new peer endpoint).
+
+**Why:** ADR-057 let an open palm in front of the *same* laptop that grabbed send the files. The intended gesture is a handoff: grab on laptop 1, carry the closed hand to laptop 2, and open it there. The release is only meaningful on the other device.
+
+**Decisions:**
+
+1. **The grabbing laptop only holds.** After a grab it keeps the clipboard's file list (not the bytes) for at most 20 s. An open palm in front of that same laptop **cancels** the grab (`copy_cancelled`); it never sends.
+2. **The other laptop claims.** When a closed palm opens in front of a laptop that is holding nothing, that laptop sends a signed `POST /api/v1/handoff/claim` to its one connected peer. The palm machine reports `release` for any stable closed palm that opens (the hand may have been out of view while it was carried); the core decides what it means.
+3. **The holder answers only a valid claim.** The caller is the signer of the request (never anything in the body) and must be the connected trusted peer; the grab must still be fresh. Otherwise `NOTHING_HELD` (409) or `DEVICE_NOT_FOUND`. One grab sends once, whatever the outcome.
+4. **The send is the normal send.** After a valid claim the holder runs the existing `drop.send` (`files.import` -> `transfer.create` -> signed TLS) to the claimer, with every ADR-054/055 rule unchanged: allowed types, <= 50 MB, no folders/symlinks/renamed executables, all-or-nothing, one active transfer. The claimer receives it as any incoming transfer and the receive animation plays.
+5. **Both laptops need hand control on** (each camera sees its own half of the gesture). A claim carries no file name, path or hash, so a malicious peer can at most trigger a send of what the user already grabbed to itself, the one device the user connected.
+6. **Feedback.** The core publishes `copied`, `copy_empty`, `copy_failed`, `copy_cancelled` (holder), `claimed`, `claim_failed` (claimer) and `sent`, `send_failed` (holder) as `gesture_detected`.
+
+---
+
 # Documentation Authority
 
 When documentation conflicts, use this priority:

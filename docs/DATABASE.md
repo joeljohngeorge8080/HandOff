@@ -1,5 +1,7 @@
 # Database Design
 
+> **Phase 3 amendment (ADR-056).** No schema change. New settings key `hand_control_enabled` (boolean, default false). New audit events `HAND_CONTROL_ENABLED` / `HAND_CONTROL_DISABLED`.
+
 > **Phase 2 amendment (ADR-055).** No schema change. Settings: new key `receive_directory` (absolute path; unset means the OS Desktop); `receive_mode` is **obsolete** — left in existing databases, ignored, never deleted. Received files no longer create `files` rows; their `transfer_files.file_id` is NULL and `original_name` keeps the sender's file name (the contract key); the name actually written, after any `(1)` suffix, is in the `FILE_RECEIVED` audit entry and the reply's `saved_as`. Dropped files are imported as `files(source='imported')` and logically deleted (`deleted_at`) when their transfer ends. New audit event `RECEIVE_DIRECTORY_CHANGED` replaces `RECEIVE_MODE_CHANGED` (the old events stay valid in history).
 
 ## 1. Purpose

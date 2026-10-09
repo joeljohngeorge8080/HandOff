@@ -21,6 +21,10 @@ use super::geometry::{
 
 /// How long the pointer must rest on the edge before the handle appears.
 pub const DWELL: Duration = Duration::from_millis(600);
+/// Once a drag has armed the strip it stays armed this long while the pointer is still near,
+/// even if the button reads as released: some platforms report the button as up during the
+/// system's own drag loop, and cutting the strip off then makes the drop fall on the desktop.
+pub const GRACE: Duration = Duration::from_millis(3000);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -49,6 +53,7 @@ pub struct Tracker {
     pub screen: Option<usize>,
     phase: Phase,
     dwell_since: Option<Instant>,
+    last_pressed: Option<Instant>,
 }
 
 impl Tracker {
@@ -58,6 +63,7 @@ impl Tracker {
             screen,
             phase: Phase::Far,
             dwell_since: None,
+            last_pressed: None,
         }
     }
 
@@ -66,6 +72,7 @@ impl Tracker {
         self.mode = mode;
         self.screen = Some(screen);
         self.dwell_since = None;
+        self.last_pressed = None;
         if matches!(mode, Mode::Idle) {
             self.phase = Phase::Far;
         }
@@ -95,6 +102,15 @@ impl Tracker {
                 && layout(scr, Mode::Armed).contains(s.cursor.0, s.cursor.1);
         }
 
+        if s.pressed && near {
+            self.last_pressed = Some(s.now);
+        }
+        let recently_dragging = self.mode == Mode::Armed
+            && near
+            && self
+                .last_pressed
+                .is_some_and(|t| s.now.duration_since(t) < GRACE);
+
         let phase = if s.pressed && near {
             self.dwell_since = None;
             Phase::Drag
@@ -114,7 +130,8 @@ impl Tracker {
             }
         };
 
-        let want_armed = matches!(phase, Phase::Drag | Phase::Dwell) || in_window;
+        let want_armed =
+            matches!(phase, Phase::Drag | Phase::Dwell) || in_window || recently_dragging;
         let mut actions = Vec::new();
         if want_armed {
             // Arm (or move the strip to the screen the drag is on). `idx` is always set when the
@@ -267,11 +284,57 @@ mod tests {
     }
 
     #[test]
-    fn releasing_the_button_away_from_the_strip_disarms_it() {
-        let (screens, now) = (one(), Instant::now());
+    fn a_button_that_reads_as_released_mid_drag_does_not_disarm_the_strip_at_once() {
+        let (screens, t0) = (one(), Instant::now());
         let mut t = Tracker::new(Some(0));
-        t.step(&sample(&screens, 1800.0, 540.0, true, now));
-        let a = t.step(&sample(&screens, 1810.0, 540.0, false, now)); // near but not over it
+        t.step(&sample(&screens, 1800.0, 540.0, true, t0));
+        // some platforms report "up" during the system drag loop, with the pointer still near
+        let a = t.step(&sample(
+            &screens,
+            1810.0,
+            540.0,
+            false,
+            t0 + Duration::from_millis(400),
+        ));
+        assert!(!has_mode(&a, Mode::Idle));
+        assert_eq!(t.mode, Mode::Armed);
+    }
+
+    #[test]
+    fn releasing_away_from_the_strip_disarms_it_after_the_grace_period() {
+        let (screens, t0) = (one(), Instant::now());
+        let mut t = Tracker::new(Some(0));
+        t.step(&sample(&screens, 1800.0, 540.0, true, t0));
+        let within = t.step(&sample(
+            &screens,
+            1810.0,
+            540.0,
+            false,
+            t0 + Duration::from_millis(2900),
+        ));
+        assert!(!has_mode(&within, Mode::Idle));
+        let after = t.step(&sample(
+            &screens,
+            1810.0,
+            540.0,
+            false,
+            t0 + GRACE + Duration::from_millis(100),
+        ));
+        assert!(has_mode(&after, Mode::Idle));
+    }
+
+    #[test]
+    fn leaving_the_edge_area_disarms_immediately_whatever_the_button_says() {
+        let (screens, t0) = (one(), Instant::now());
+        let mut t = Tracker::new(Some(0));
+        t.step(&sample(&screens, 1800.0, 540.0, true, t0));
+        let a = t.step(&sample(
+            &screens,
+            1000.0,
+            540.0,
+            false,
+            t0 + Duration::from_millis(200),
+        ));
         assert!(has_mode(&a, Mode::Idle));
     }
 

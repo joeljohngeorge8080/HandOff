@@ -22,12 +22,14 @@
         "skipTaskbar": true,
         "resizable": true,
         "shadow": false,
-        "visible": false,
+        "visible": true,
         "focus": false,
         "dragDropEnabled": true,
         "maximizable": false,
         "minimizable": false,
-        "closable": false
+        "closable": false,
+        "x": -32000,
+        "y": -32000
       }
     ],
     "security": {

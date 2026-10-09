@@ -11,6 +11,7 @@ import binascii
 import json
 import re
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -40,6 +41,8 @@ class PeerContext:
     connections: ConnectionManager
     receiver: ReceiverService
     auth: Authenticator
+    # ADR-058: answers a peer's claim on what this device grabbed; None = nothing can be held.
+    claims: Callable[[str], dict[str, str]] | None = None
 
 
 class RequestIdMiddleware:
@@ -182,6 +185,15 @@ def create_app(ctx: PeerContext) -> FastAPI:
         peer = authenticate(request)
         ctx.connections.release_inbound(peer.device_id)
         return {"status": "released"}
+
+    @app.post("/api/v1/handoff/claim")
+    async def claim_handoff(request: Request) -> JSONResponse:
+        # The caller is whoever signed the request; nothing in the body is read or trusted.
+        peer = await run_in_threadpool(authenticate, request)
+        if ctx.claims is None:
+            raise HandOffError("NOTHING_HELD", "This device is not holding anything.")
+        result = await run_in_threadpool(ctx.claims, peer.device_id)
+        return JSONResponse(result, status_code=202)
 
     @app.post("/api/v1/transfers")
     async def create_transfer(request: Request) -> JSONResponse:

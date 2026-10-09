@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { basename, extensionOf, kindOf, shownChips } from "./fileGlyph";
-import { MAX_CHIPS, emergeFrames, inhaleFrames, settleFrames, shakeFrames, stagger } from "./motion";
+import { MAX_CHIPS, emergeFrames, inhaleFrames, openFrames, settleFrames, shakeFrames, squeezeFrames, stagger } from "./motion";
 
 describe("keyframes", () => {
   it("inhale starts away from the gateway, invisible, and ends inside it, shrunk and gone", () => {
@@ -18,7 +18,7 @@ describe("keyframes", () => {
     expect(f.at(-1)?.opacity).toBe(1);
   });
   it("offsets are strictly increasing and span 0..1", () => {
-    for (const f of [inhaleFrames(100, 5), emergeFrames(100, 5), settleFrames(), shakeFrames()]) {
+    for (const f of [inhaleFrames(100, 5), emergeFrames(100, 5), settleFrames(), shakeFrames(), squeezeFrames(), openFrames()]) {
       const offsets = f.map((k) => k.offset ?? 0);
       expect(offsets[0]).toBe(0);
       expect(offsets.at(-1)).toBe(1);
@@ -27,9 +27,20 @@ describe("keyframes", () => {
     }
   });
   it("animates only transform and opacity (compositor-friendly)", () => {
-    for (const f of [inhaleFrames(100, 5), emergeFrames(100, 5), settleFrames(), shakeFrames()]) {
+    for (const f of [inhaleFrames(100, 5), emergeFrames(100, 5), settleFrames(), shakeFrames(), squeezeFrames(), openFrames()]) {
       for (const k of f) expect(Object.keys(k).sort()).toEqual(["offset", "opacity", "transform"]);
     }
+  });
+  it("squeeze closes in on the gateway and returns to rest; open swells out and returns to rest", () => {
+    const scaleOf = (k: { transform: string }) => Number(/scale\(([\d.]+)\)/.exec(k.transform)?.[1]);
+    const sq = squeezeFrames().map(scaleOf);
+    const op = openFrames().map(scaleOf);
+    expect(sq[0]).toBe(1);
+    expect(sq.at(-1)).toBe(1);
+    expect(Math.min(...sq)).toBeLessThan(1);
+    expect(op[0]).toBe(1);
+    expect(op.at(-1)).toBe(1);
+    expect(Math.max(...op)).toBeGreaterThan(1);
   });
   it("staggers several files in order and never for one", () => {
     expect(stagger(0, 1)).toBe(0);

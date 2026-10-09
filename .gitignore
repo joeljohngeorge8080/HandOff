@@ -31,3 +31,9 @@ app/src-tauri/gen/
 /.handoff-dev/
 .DS_Store
 backend/*.spec
+
+# Reference checkout of Google MediaPipe (not part of HandOff)
+/mediapipe/
+
+# Hand-landmarker model, fetched by scripts/fetch-hand-model.sh
+backend/models/

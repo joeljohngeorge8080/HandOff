@@ -82,6 +82,13 @@ fn place(win: &tauri::WebviewWindow, r: &Rect) -> tauri::Result<()> {
             if current != Some(r) {
                 return; // a newer placement owns the window now
             }
+            #[cfg(debug_assertions)]
+            if let (Ok(p), Ok(sz)) = (win.outer_position(), win.outer_size()) {
+                eprintln!(
+                    "[edge] wanted {}x{} at ({},{}), window is {}x{} at ({},{})",
+                    r.w, r.h, r.x, r.y, sz.width, sz.height, p.x, p.y
+                );
+            }
             let off = win
                 .outer_position()
                 .map(|p| p.x != r.x || p.y != r.y)
@@ -101,7 +108,10 @@ pub fn apply(app: &AppHandle, mode: Mode, screen: &Screen, index: usize) -> taur
     };
     let r = layout(screen, mode);
     // Click-through first, so a shrinking window never briefly swallows clicks.
-    win.set_ignore_cursor_events(!mode.hittable())?;
+    // Debug builds only: HANDOFF_DEV_HITTABLE=1 never makes the window click-through, to tell a
+    // click-through problem from a window that refuses OS drops altogether.
+    let always_hit = cfg!(debug_assertions) && std::env::var_os("HANDOFF_DEV_HITTABLE").is_some();
+    win.set_ignore_cursor_events(!(mode.hittable() || always_hit))?;
     let _ = win.set_focusable(mode.focusable());
     place(&win, &r)?;
     win.set_always_on_top(true)?;
@@ -214,7 +224,10 @@ pub fn spawn_watcher(app: AppHandle) {
                                 }
                             }
                             Action::Proximity(phase) => {
-                                let _ = app.emit("edge-proximity", json!({"phase": phase}));
+                                let _ = app.emit(
+                                    "edge-proximity",
+                                    json!({"phase": phase, "pressed": pressed}),
+                                );
                             }
                         }
                     }

@@ -29,6 +29,8 @@ export const MESSAGES = {
   missing: "That file no longer exists",
   invalid: "This item can't be sent",
   complete: "Transfer complete",
+  grabbed: "Grabbed",
+  released: "Released",
   failed: "Transfer failed",
   partial: "Some files failed",
 } as const;

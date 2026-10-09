@@ -56,9 +56,22 @@ describe("waking up", () => {
     expect(kind(model)).toBe("panel");
     expect(effects).toContainEqual({ type: "window", mode: "panel" });
   });
-  it("a click anywhere but the handle does nothing", () => {
+  it("a click while the edge is idle does nothing", () => {
     const { model } = run(withPeer(), { ...os, type: "pointer_click", x: 1, y: 0.5 });
     expect(kind(model)).toBe("idle");
+  });
+  it("pressing the button on the handle (which looks like a drag) still lets the click open the panel", () => {
+    const { model } = run(
+      withPeer(),
+      { type: "proximity", phase: "dwell" },
+      { type: "proximity", phase: "drag" },
+      { ...os, type: "pointer_click", x: 1, y: 0.5 },
+    );
+    expect(kind(model)).toBe("panel");
+  });
+  it("a click on an armed strip opens the panel too, a real drag never produces a click", () => {
+    const { model } = run(withPeer(), { type: "proximity", phase: "drag" }, { ...os, type: "pointer_click", x: 1, y: 0.5 });
+    expect(kind(model)).toBe("panel");
   });
   it("the pointer leaving cancels everything that was only waiting for a drop", () => {
     for (const phase of ["near", "drag", "dwell"] as const) {
@@ -373,5 +386,53 @@ describe("computer-vision readiness", () => {
     const { model, effects } = run(withPeer(), cv("drag_start"), cv("release"));
     expect(kind(model)).toBe("sending");
     expect(of(effects, "send")).toHaveLength(1);
+  });
+});
+
+describe("hand grab and release animations", () => {
+  const cv = (gesture: string): Input => ({ source: "cv", type: "gesture_detected", gesture, confidence: 1 });
+
+  it("an open-to-closed palm shows the grab view, a closed-to-open palm the release view", () => {
+    expect(kind(run(withPeer(), cv("palm_grab")).model)).toBe("hand_grab");
+    expect(kind(run(withPeer(), cv("palm_release")).model)).toBe("hand_release");
+  });
+  it("wakes the strip, then returns to idle on its own timer and shrinks the window", () => {
+    const a = run(withPeer(), cv("palm_grab"));
+    expect(a.effects).toContainEqual({ type: "window", mode: "stage" });
+    const sched = of(a.effects, "schedule").at(-1) as Extract<Effect, { type: "schedule" }>;
+    expect(sched.ms).toBe(HOLD_MS.hand);
+    const b = run(a.model, { type: "timer", token: sched.token });
+    expect(kind(b.model)).toBe("idle");
+    expect(b.effects).toContainEqual({ type: "window", mode: "idle" });
+  });
+  it("never interrupts a transfer, a drag or a panel", () => {
+    for (const start of [run(withPeer(), drop(1)).model, run(withPeer(), drag()).model, run(withPeer(), { type: "open_panel" }).model]) {
+      const s = reduce(start, cv("palm_release"));
+      expect(s.model.view).toEqual(start.view);
+      expect(s.effects).toEqual([]);
+    }
+  });
+  it("only a CV-sourced gesture can trigger it", () => {
+    const s = reduce(withPeer(), { source: "os", type: "gesture_detected", gesture: "palm_grab", confidence: 1 } as Input);
+    expect(kind(s.model)).toBe("idle");
+  });
+  it("other and unknown gestures still change nothing", () => {
+    for (const g of ["fist", "pinch_closed", "copied", "sent", "send_failed", "palm_grab_x", ""]) {
+      expect(kind(run(withPeer(), cv(g)).model)).toBe("idle");
+    }
+  });
+  it("the transfer that a release starts takes over from the release view", () => {
+    const { model } = run(withPeer(), cv("palm_release"), { type: "transfer", transfer: tr({ status: "created" }) });
+    expect(kind(model)).toBe("sending");
+  });
+  it("a stale timer from the grab cannot cut a later view short", () => {
+    const a = run(withPeer(), cv("palm_grab"));
+    const old = (of(a.effects, "schedule").at(-1) as Extract<Effect, { type: "schedule" }>).token;
+    const b = run(a.model, { type: "transfer", transfer: tr({ status: "created" }) }, { type: "timer", token: old });
+    expect(kind(b.model)).toBe("sending");
+  });
+  it("shows a short label for each", () => {
+    expect(labelFor({ kind: "hand_grab", token: 1 }, null)).toBe("Grabbed");
+    expect(labelFor({ kind: "hand_release", token: 1 }, null)).toBe("Released");
   });
 });

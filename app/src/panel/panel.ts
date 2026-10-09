@@ -5,8 +5,9 @@
 // native folder picker and validated by the core (the receiving machine decides its own
 // destination; nothing here, and nothing from the network, supplies a path to write to).
 import { el } from "../dom";
+import { handControlLabel } from "../input/cv";
 import { canSwitchPeer, formatBytes, shortenPath } from "../rules";
-import type { Peer, Snapshot, Transfer } from "../types";
+import type { HandControl, Peer, Snapshot, Transfer } from "../types";
 
 export interface PanelDeps {
   core: <T>(action: string, payload?: Record<string, unknown>) => Promise<T>;
@@ -29,6 +30,8 @@ export class Panel {
   private snapshot: Snapshot | null = null;
   private peers: Peer[] = [];
   private retention = 90;
+  private handEnabled = false;
+  private hand: HandControl | null = null;
   private error = "";
   private busyId: string | null = null;
   private dialogOpen = false;
@@ -59,6 +62,12 @@ export class Panel {
     this.timer = setInterval(() => void this.refresh(), REFRESH_MS);
   }
 
+  /** Live status pushed by the core (`cv.status`). */
+  setHandControl(status: HandControl): void {
+    this.hand = status;
+    if (this.open_ && !this.dialogOpen && this.busyId === null) this.render();
+  }
+
   hide(): void {
     this.open_ = false;
     delete document.body.dataset.panel;
@@ -82,6 +91,8 @@ export class Panel {
       this.peers = found.devices;
       const r = settings.settings.history_retention;
       if (typeof r === "number") this.retention = r;
+      this.handEnabled = settings.settings.hand_control_enabled === true;
+      this.hand = snap.hand_control ?? this.hand;
     } catch (e) {
       this.error = (e as { message?: string })?.message ?? "Could not reach HandOff";
     }
@@ -103,7 +114,7 @@ export class Panel {
         el("div", { text: conn?.device ? conn.device.device_name : "Not connected" }),
         el("div", { class: "muted", text: conn?.connected ? "Dropped files are sent here" : "Choose a device below" })));
 
-    this.root.replaceChildren(head, peerRow, this.devicesSection(active), this.folderSection(snap), this.historySection(snap));
+    this.root.replaceChildren(head, peerRow, this.devicesSection(active), this.folderSection(snap), this.handSection(), this.historySection(snap));
     if (this.error) this.root.append(el("p", { class: "error", text: this.error }));
     const quit = el("button", { class: "quit", text: "Quit HandOff" });
     quit.addEventListener("click", () => this.deps.quit());
@@ -142,6 +153,33 @@ export class Panel {
       el("div", { class: "card row" },
         el("div", { class: "grow ellipsis", title: dir, text: shortenPath(dir) }),
         change));
+  }
+
+  private handSection(): HTMLElement {
+    const box = el("input", { type: "checkbox" });
+    box.checked = this.handEnabled;
+    box.addEventListener("change", () => void this.toggleHandControl(box.checked));
+    const bad = this.handEnabled && this.hand?.state === "error";
+    return el("section", {},
+      el("h2", { text: "Hand control" }),
+      el("label", { class: "card row", title: "Uses the camera to move the pointer and drag files" },
+        el("span", { class: "grow", text: "Control with my hand (camera)" }), box),
+      el("p", { class: bad ? "error" : "muted", text: handControlLabel(this.handEnabled, this.hand) }));
+  }
+
+  private async toggleHandControl(on: boolean): Promise<void> {
+    this.handEnabled = on;
+    this.hand = on ? { state: "starting", message: "" } : null;
+    this.render();
+    try {
+      await this.deps.core("settings.set", { key: "hand_control_enabled", value: on });
+      this.error = "";
+    } catch (e) {
+      this.handEnabled = !on;
+      this.error = (e as { message?: string })?.message ?? "Could not change hand control";
+    }
+    await this.refresh();
+    this.render();
   }
 
   private historySection(snap: Snapshot | null): HTMLElement {
