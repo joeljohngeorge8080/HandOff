@@ -57,8 +57,11 @@ class Clock:
         return self.now
 
 
-def make(files=("/data/a.png",), send_error=None, read_error=None):
-    bus, seen, sent, clock = EventBus(), [], [], Clock()
+PEER = "11111111-1111-4111-8111-111111111111"
+
+
+def make(files=("/data/a.png",), send_error=None, read_error=None, claim_error=None, active=PEER):
+    bus, seen, sent, claims, clock = EventBus(), [], [], [], Clock()
     bus.subscribe(lambda n, d: seen.append((n, d)))
 
     def read():
@@ -72,79 +75,161 @@ def make(files=("/data/a.png",), send_error=None, read_error=None):
         sent.append(paths)
         return {"transfer": {"transfer_id": "t1"}}
 
-    return CopyBridge(bus, send, read, clock), seen, sent, clock
+    def claim():
+        if claim_error:
+            raise claim_error
+        claims.append(1)
+
+    bridge = CopyBridge(bus, send, claim, lambda: active, read, clock)
+    return bridge, seen, sent, claims, clock
 
 
 def gestures(seen):
     return [d["gesture"] for n, d in seen if n == "cv.event"]
 
 
-def test_grab_then_release_sends_the_copied_files_once():
-    b, seen, sent, _ = make()
+# --- the laptop that grabbed ---
+
+
+def test_an_open_palm_on_the_grabbing_laptop_cancels_the_grab_and_sends_nothing():
+    b, seen, sent, claims, _ = make()
     b.on_grab()
     b.on_release()
-    b.on_release()
-    assert sent == [["/data/a.png"]]
-    assert gestures(seen) == ["copied", "sent"]
+    assert sent == [] and claims == []
+    assert gestures(seen) == ["copied", "copy_cancelled"]
+    with pytest.raises(HandOffError) as e:  # the grab is gone: a claim finds nothing
+        b.serve_claim(PEER)
+    assert e.value.code == "NOTHING_HELD"
 
 
-def test_release_without_a_grab_sends_nothing():
-    b, seen, sent, _ = make()
-    b.on_release()
-    assert sent == [] and gestures(seen) == []
-
-
-def test_grab_with_nothing_on_the_clipboard_reports_it_and_a_release_sends_nothing():
-    b, seen, sent, _ = make(files=())
+def test_grab_with_nothing_on_the_clipboard_reports_it_and_holds_nothing():
+    b, seen, _, _, _ = make(files=())
     b.on_grab()
-    b.on_release()
-    assert sent == [] and gestures(seen) == ["copy_empty"]
+    assert gestures(seen) == ["copy_empty"]
+    with pytest.raises(HandOffError):
+        b.serve_claim(PEER)
 
 
 def test_an_unreadable_clipboard_is_reported_not_raised():
-    b, seen, sent, _ = make(read_error=HandOffError("CLIPBOARD_UNAVAILABLE", "no clipboard"))
+    b, seen, _, _, _ = make(read_error=HandOffError("CLIPBOARD_UNAVAILABLE", "no clipboard"))
     b.on_grab()
-    b.on_release()
-    assert sent == [] and gestures(seen) == ["copy_failed"]
-
-
-def test_a_rejected_send_such_as_no_peer_is_reported_and_forgotten():
-    err = HandOffError("DEVICE_NOT_FOUND", "No HandOff device connected")
-    b, seen, sent, _ = make(send_error=err)
-    b.on_grab()
-    b.on_release()
-    b.on_release()
-    assert gestures(seen) == ["copied", "send_failed"]  # not retried by a second release
-
-
-def test_an_unexpected_error_in_send_is_contained():
-    b, seen, _, _ = make(send_error=RuntimeError("boom"))
-    b.on_grab()
-    b.on_release()
-    assert gestures(seen) == ["copied", "send_failed"]
-
-
-def test_a_stale_grab_is_not_sent():
-    b, seen, sent, clock = make()
-    b.on_grab()
-    clock.now += config.CV_HOLD_MAX_SECONDS + 1
-    b.on_release()
-    assert sent == []
+    assert gestures(seen) == ["copy_failed"]
 
 
 def test_a_new_grab_replaces_the_previous_one():
     files = [["/data/a.png"], ["/data/b.png"]]
-    b, _, sent, _ = make()
+    b, _, sent, _, _ = make()
     b._read = lambda: files.pop(0)
     b.on_grab()
     b.on_grab()
-    b.on_release()
+    b.serve_claim(PEER)
     assert sent == [["/data/b.png"]]
 
 
-def test_release_waits_for_a_grab_that_is_still_reading_the_clipboard():
+# --- the laptop the closed hand is carried to ---
+
+
+def test_an_open_palm_with_nothing_held_here_claims_from_the_connected_peer():
+    b, seen, sent, claims, _ = make()
+    b.on_release()
+    assert claims == [1] and sent == []  # this laptop never sends on its own release
+    assert gestures(seen) == ["claimed"]
+
+
+def test_a_refused_claim_is_reported_not_raised():
+    err = HandOffError("NOTHING_HELD", "The other device is not holding anything.")
+    b, seen, _, _, _ = make(claim_error=err)
+    b.on_release()
+    assert gestures(seen) == ["claim_failed"]
+
+
+def test_an_unexpected_error_while_claiming_is_contained():
+    b, seen, _, _, _ = make(claim_error=RuntimeError("boom"))
+    b.on_release()
+    assert gestures(seen) == ["claim_failed"]
+
+
+def test_a_stale_grab_does_not_cancel_a_release_it_claims_instead():
+    b, seen, _, claims, clock = make()
+    b.on_grab()
+    clock.now += config.CV_HOLD_MAX_SECONDS + 1
+    b.on_release()
+    assert claims == [1]
+
+
+# --- answering a claim (the peer endpoint calls this) ---
+
+
+def test_a_claim_from_the_connected_peer_sends_the_held_files_once():
+    b, seen, sent, _, _ = make()
+    b.on_grab()
+    out = b.serve_claim(PEER)
+    assert out == {"transfer_id": "t1"} and sent == [["/data/a.png"]]
+    assert gestures(seen) == ["copied", "sent"]
+    with pytest.raises(HandOffError) as e:  # one grab sends once
+        b.serve_claim(PEER)
+    assert e.value.code == "NOTHING_HELD"
+    assert len(sent) == 1
+
+
+def test_a_claim_with_nothing_held_is_refused():
+    b, _, sent, _, _ = make()
+    with pytest.raises(HandOffError) as e:
+        b.serve_claim(PEER)
+    assert e.value.code == "NOTHING_HELD" and sent == []
+
+
+def test_a_claim_after_the_grab_expired_is_refused():
+    b, _, sent, _, clock = make()
+    b.on_grab()
+    clock.now += config.CV_HOLD_MAX_SECONDS + 1
+    with pytest.raises(HandOffError) as e:
+        b.serve_claim(PEER)
+    assert e.value.code == "NOTHING_HELD" and sent == []
+
+
+def test_only_the_connected_peer_may_claim_and_a_wrong_claimer_does_not_use_up_the_grab():
+    b, _, sent, _, _ = make()
+    b.on_grab()
+    other = "22222222-2222-4222-8222-222222222222"
+    with pytest.raises(HandOffError) as e:
+        b.serve_claim(other)
+    assert e.value.code == "DEVICE_NOT_FOUND" and sent == []
+    assert b.serve_claim(PEER) == {"transfer_id": "t1"}
+
+
+def test_a_claim_with_no_connected_peer_is_refused():
+    b, _, sent, _, _ = make(active=None)
+    b.on_grab()
+    with pytest.raises(HandOffError) as e:
+        b.serve_claim(PEER)
+    assert e.value.code == "DEVICE_NOT_FOUND" and sent == []
+
+
+def test_a_rejected_send_is_reported_to_the_claimer_and_the_grab_is_used_up():
+    err = HandOffError("FILE_TYPE_NOT_SUPPORTED", "nope")
+    b, seen, _, _, _ = make(send_error=err)
+    b.on_grab()
+    with pytest.raises(HandOffError) as e:
+        b.serve_claim(PEER)
+    assert e.value.code == "FILE_TYPE_NOT_SUPPORTED"
+    assert gestures(seen) == ["copied", "send_failed"]
+    with pytest.raises(HandOffError):
+        b.serve_claim(PEER)
+
+
+def test_an_unexpected_error_in_send_becomes_a_generic_failure_not_a_crash():
+    b, seen, _, _, _ = make(send_error=RuntimeError("boom"))
+    b.on_grab()
+    with pytest.raises(HandOffError) as e:
+        b.serve_claim(PEER)
+    assert e.value.code == "INTERNAL_ERROR"
+    assert gestures(seen) == ["copied", "send_failed"]
+
+
+def test_a_claim_waits_for_a_grab_that_is_still_reading_the_clipboard():
     started, finish = threading.Event(), threading.Event()
-    b, seen, sent, _ = make()
+    b, _, sent, _, _ = make()
 
     def slow_read():
         started.set()
@@ -155,12 +240,13 @@ def test_release_waits_for_a_grab_that_is_still_reading_the_clipboard():
     g = threading.Thread(target=b.on_grab)
     g.start()
     started.wait(2)
-    r = threading.Thread(target=b.on_release)
-    r.start()
+    result = []
+    c = threading.Thread(target=lambda: result.append(b.serve_claim(PEER)))
+    c.start()
     finish.set()
     g.join(3)
-    r.join(3)
-    assert sent == [["/data/a.png"]]
+    c.join(3)
+    assert sent == [["/data/a.png"]] and result == [{"transfer_id": "t1"}]
 
 
 def test_tk_hex_byte_dump_of_a_uri_list_is_decoded_regression():

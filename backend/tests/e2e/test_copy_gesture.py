@@ -1,4 +1,4 @@
-"""COPY gesture end to end (ADR-057): grab copies, release sends through the normal pipeline."""
+"""COPY gesture end to end (ADR-057, ADR-058): grab on laptop A, release on laptop B."""
 
 import os
 
@@ -28,67 +28,99 @@ def gestures(node):
     return seen
 
 
-def test_grab_then_release_delivers_the_copied_file_to_the_connected_device(
+def make(tmp_path, name, data=b"hello"):
+    f = tmp_path / name
+    f.write_bytes(data)
+    return f
+
+
+def test_grab_on_one_laptop_and_release_on_the_other_delivers_the_file(
     pair, tmp_path, on_clipboard
 ):
     a, b = pair
     connect_pair(a, b)
     data = os.urandom(50_000)
-    f = tmp_path / "photo.png"
-    f.write_bytes(data)
+    f = make(tmp_path, "photo.png", data)
     on_clipboard([str(f)])
-    seen = gestures(a)
+    a_seen, b_seen = gestures(a), gestures(b)
 
-    hand = a.core.hand_control
-    hand.on_grab()
-    assert seen == ["copied"]
-    hand.on_release()
+    a.core.hand_control.on_grab()  # laptop A: open palm -> closed palm
+    assert a_seen == ["copied"]
+    b.core.hand_control.on_release()  # laptop B: the closed hand arrives and opens
 
-    wait_for(lambda: b.received_files() == {"photo.png": data}, what="the file to arrive")
-    assert seen == ["copied", "sent"]
+    wait_for(lambda: b.received_files() == {"photo.png": data}, what="the file to arrive on B")
+    assert a_seen == ["copied", "sent"] and b_seen == ["claimed"]
     assert f.read_bytes() == data  # the original is untouched
 
 
-def test_release_with_no_connected_device_is_rejected_and_nothing_is_queued(
+def test_opening_the_hand_on_the_grabbing_laptop_sends_nothing_and_cancels_the_grab(
+    pair, tmp_path, on_clipboard
+):
+    a, b = pair
+    connect_pair(a, b)
+    on_clipboard([str(make(tmp_path, "a.txt"))])
+    a_seen, b_seen = gestures(a), gestures(b)
+    a.core.hand_control.on_grab()
+    a.core.hand_control.on_release()  # same laptop: cancel
+    assert a_seen == ["copied", "copy_cancelled"]
+    assert a.ok("history.list")["items"] == [] and b.received_files() == {}
+    b.core.hand_control.on_release()  # nothing is held any more
+    assert b_seen == ["claim_failed"] and b.received_files() == {}
+
+
+def test_a_release_when_the_other_laptop_holds_nothing_is_refused(pair):
+    a, b = pair
+    connect_pair(a, b)
+    b_seen = gestures(b)
+    b.core.hand_control.on_release()
+    assert b_seen == ["claim_failed"] and a.ok("history.list")["items"] == []
+
+
+def test_a_release_with_no_connected_laptop_is_refused_and_nothing_is_queued(
     pair, tmp_path, on_clipboard
 ):
     a, b = pair  # never connected
-    f = tmp_path / "a.txt"
-    f.write_bytes(b"x")
-    on_clipboard([str(f)])
-    seen = gestures(a)
+    on_clipboard([str(make(tmp_path, "a.txt"))])
     a.core.hand_control.on_grab()
-    a.core.hand_control.on_release()
-    assert seen == ["copied", "send_failed"]
-    assert a.ok("history.list")["items"] == []
-    a.core.hand_control.on_release()  # not retried later
-    assert a.ok("history.list")["items"] == []
+    b_seen = gestures(b)
+    b.core.hand_control.on_release()
+    assert b_seen == ["claim_failed"] and a.ok("history.list")["items"] == []
+
+
+def test_one_grab_sends_once_even_if_the_other_laptop_releases_twice(pair, tmp_path, on_clipboard):
+    a, b = pair
+    connect_pair(a, b)
+    on_clipboard([str(make(tmp_path, "once.txt", b"x"))])
+    a.core.hand_control.on_grab()
+    b.core.hand_control.on_release()
+    wait_for(lambda: b.received_files() == {"once.txt": b"x"}, what="the file to arrive")
+    b_seen = gestures(b)
+    b.core.hand_control.on_release()
+    assert b_seen == ["claim_failed"]
+    assert len(a.ok("history.list")["items"]) == 1
 
 
 @pytest.mark.parametrize("name", ["setup.exe", "movie.mp4", "notes.docx"])
-def test_disallowed_types_on_the_clipboard_are_refused_all_or_nothing(
+def test_disallowed_types_are_refused_all_or_nothing_and_never_reach_the_other_laptop(
     pair, tmp_path, on_clipboard, name
 ):
     a, b = pair
     connect_pair(a, b)
-    ok, bad = tmp_path / "ok.txt", tmp_path / name
-    ok.write_bytes(b"fine")
-    bad.write_bytes(b"MZ....")
+    ok, bad = make(tmp_path, "ok.txt", b"fine"), make(tmp_path, name, b"MZ....")
     on_clipboard([str(ok), str(bad)])
-    seen = gestures(a)
+    a_seen, b_seen = gestures(a), gestures(b)
     a.core.hand_control.on_grab()
-    a.core.hand_control.on_release()
-    assert seen == ["copied", "send_failed"]
+    b.core.hand_control.on_release()
+    assert a_seen == ["copied", "send_failed"] and b_seen == ["claim_failed"]
     assert b.received_files() == {}
 
 
 def test_an_executable_renamed_to_an_allowed_extension_is_refused(pair, tmp_path, on_clipboard):
     a, b = pair
     connect_pair(a, b)
-    f = tmp_path / "invoice.pdf"
-    f.write_bytes(b"MZ" + os.urandom(100))
-    on_clipboard([str(f)])
-    seen = gestures(a)
+    on_clipboard([str(make(tmp_path, "invoice.pdf", b"MZ" + os.urandom(100)))])
+    a_seen, b_seen = gestures(a), gestures(b)
     a.core.hand_control.on_grab()
-    a.core.hand_control.on_release()
-    assert seen == ["copied", "send_failed"] and b.received_files() == {}
+    b.core.hand_control.on_release()
+    assert a_seen == ["copied", "send_failed"] and b_seen == ["claim_failed"]
+    assert b.received_files() == {}

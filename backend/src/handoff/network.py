@@ -16,7 +16,7 @@ from handoff.config import (
 )
 from handoff.core import Core
 from handoff.cv.copy_bridge import CopyBridge
-from handoff.devices.client import PeerClient
+from handoff.devices.client import PeerClient, error_from_response
 from handoff.devices.connection import ConnectionManager
 from handoff.devices.discovery import (
     Advertisement,
@@ -24,6 +24,7 @@ from handoff.devices.discovery import (
     Discovery,
     ZeroconfDiscovery,
 )
+from handoff.errors import HandOffError
 from handoff.history import PeriodicTask
 from handoff.peer_api.app import PeerContext, create_app
 from handoff.peer_api.auth import Authenticator
@@ -97,14 +98,24 @@ class Network:
         self.sender = SenderService(core, self.connections, self.client)
         self.drops = DropService(core, self.connections, self.sender)
         self.drops.sweep_orphans()  # a crash can leave dropped copies behind
-        bridge = CopyBridge(core.events, self.drops.send)  # hand COPY gesture (ADR-057)
+        # Hand COPY gesture (ADR-057/058): grab holds here, release claims from the peer.
+        bridge = CopyBridge(
+            core.events,
+            self.drops.send,
+            self._claim_from_peer,
+            lambda: peer.device_id if (peer := self.connections.active_peer()) else None,
+        )
         core.hand_control.on_grab, core.hand_control.on_release = bridge.on_grab, bridge.on_release
         self.connections.on_offline = lambda: self.sender.abort_active(
             "DEVICE_OFFLINE", "The device went offline."
         )
         app = create_app(
             PeerContext(
-                core, self.connections, self.receiver, Authenticator(core, NonceCache(), limiter)
+                core,
+                self.connections,
+                self.receiver,
+                Authenticator(core, NonceCache(), limiter),
+                claims=bridge.serve_claim,
             )
         )
         cert, key = write_server_tls_files(core.paths, core.identity)
@@ -120,6 +131,18 @@ class Network:
         self._expiry = PeriodicTask(self.receiver.expire_stale, _EXPIRY_INTERVAL, "transfer-expiry")
         self._expiry.start()
         log.info("Peer API listening on https://%s:%s", self.host, self.port)
+
+    def _claim_from_peer(self) -> None:
+        """Ask the connected device to send what its hand is holding (ADR-058)."""
+        peer = self.connections.active_peer()
+        if peer is None:
+            raise HandOffError("DEVICE_NOT_FOUND", "No HandOff device connected")
+        address, port = peer.endpoint()
+        resp = self.client.request(
+            address, port, "POST", "/api/v1/handoff/claim", expected_key=peer.public_key, json={}
+        )
+        if resp.status_code != 202:
+            raise error_from_response(resp)
 
     def stop(self) -> None:
         """Stop everything that was started; one failing part must not stop the rest."""

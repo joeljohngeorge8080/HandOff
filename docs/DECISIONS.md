@@ -1244,7 +1244,7 @@ Hand control is one more input mechanism (DECISIONS §47). It drives the same OS
 
 # ADR-057: Pointing-Only Cursor and the COPY Gesture (Phase 3, step 2)
 
-**Status:** Accepted
+**Status:** Accepted (decisions 3 and 4 amended by ADR-058)
 
 **Supersedes / amends (ADR-045):** ADR-056 decision 1 (pointer moves whenever a hand is visible), decision 2 and the statement "never calls transfer APIs" (the send path gains a second trigger), decision 3 (`grab` / `release` are now consumed by the core).
 
@@ -1261,6 +1261,25 @@ Hand control is one more input mechanism (DECISIONS §47). It drives the same OS
 ### Rationale
 
 The user asked for a gesture that copies a selected file and sends it. A pure-CV design cannot see the OS selection, and the existing drop path already holds every validation, so the gesture only produces the input (Ctrl+C) and a trigger; the engine is untouched.
+
+---
+
+# ADR-058: Grab on One Laptop, Release on the Other (claim protocol)
+
+**Status:** Accepted
+
+**Supersedes / amends (ADR-045):** ADR-057 decisions 3 and 4 (a release on the grabbing laptop sent the files; "anywhere" meant the grabbing laptop's own camera), API §5-27 (one new peer endpoint).
+
+**Why:** ADR-057 let an open palm in front of the *same* laptop that grabbed send the files. The intended gesture is a handoff: grab on laptop 1, carry the closed hand to laptop 2, and open it there. The release is only meaningful on the other device.
+
+**Decisions:**
+
+1. **The grabbing laptop only holds.** After a grab it keeps the clipboard's file list (not the bytes) for at most 20 s. An open palm in front of that same laptop **cancels** the grab (`copy_cancelled`); it never sends.
+2. **The other laptop claims.** When a closed palm opens in front of a laptop that is holding nothing, that laptop sends a signed `POST /api/v1/handoff/claim` to its one connected peer. The palm machine reports `release` for any stable closed palm that opens (the hand may have been out of view while it was carried); the core decides what it means.
+3. **The holder answers only a valid claim.** The caller is the signer of the request (never anything in the body) and must be the connected trusted peer; the grab must still be fresh. Otherwise `NOTHING_HELD` (409) or `DEVICE_NOT_FOUND`. One grab sends once, whatever the outcome.
+4. **The send is the normal send.** After a valid claim the holder runs the existing `drop.send` (`files.import` -> `transfer.create` -> signed TLS) to the claimer, with every ADR-054/055 rule unchanged: allowed types, <= 50 MB, no folders/symlinks/renamed executables, all-or-nothing, one active transfer. The claimer receives it as any incoming transfer and the receive animation plays.
+5. **Both laptops need hand control on** (each camera sees its own half of the gesture). A claim carries no file name, path or hash, so a malicious peer can at most trigger a send of what the user already grabbed to itself, the one device the user connected.
+6. **Feedback.** The core publishes `copied`, `copy_empty`, `copy_failed`, `copy_cancelled` (holder), `claimed`, `claim_failed` (claimer) and `sent`, `send_failed` (holder) as `gesture_detected`.
 
 ---
 

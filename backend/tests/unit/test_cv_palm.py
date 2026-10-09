@@ -1,4 +1,7 @@
-"""COPY gesture: open palm -> closed palm = grab; closed -> open palm = release (ADR-057)."""
+"""COPY gesture: open -> closed palm = grab; closed -> open palm = release (ADR-057, ADR-058).
+
+The machine does not know which laptop holds the grab: a release is reported for any stable fist
+that opens. The core decides what it means (cancel here, or claim from the peer)."""
 
 from handoff import config
 from handoff.cv.palm import GRAB, RELEASE, PalmMachine
@@ -60,24 +63,35 @@ def test_the_hand_may_leave_the_camera_view_while_holding_and_still_release():
     assert out == [GRAB, RELEASE]
 
 
-def test_release_without_a_grab_does_nothing():
-    out, _ = run(PalmMachine(), [(POSE_FIST, 0.5), (POSE_OPEN, 2.0)])
+def test_a_fist_that_arrives_from_elsewhere_and_opens_is_a_release_without_a_grab_here():
+    # laptop 2: the closed hand enters the camera's view and opens (ADR-058)
+    out, _ = run(PalmMachine(), [(None, 1.0), (POSE_FIST, 0.5), (POSE_OPEN, 1.0)])
+    assert out == [RELEASE]
+
+
+def test_an_open_palm_with_no_fist_before_it_releases_nothing():
+    out, _ = run(PalmMachine(), [(POSE_POINT, 0.5), (POSE_OPEN, 2.0)])
     assert out == []
 
 
-def test_a_grab_that_is_never_released_expires():
+def test_a_brief_fist_flash_before_opening_is_not_a_release():
+    out, _ = run(PalmMachine(), [(POSE_FIST, HOLD / 3), (POSE_OPEN, 1.0)])
+    assert out == []
+
+
+def test_a_fist_that_was_last_seen_long_ago_cannot_release():
     m = PalmMachine()
     out, t = run(m, [(POSE_OPEN, 0.5), (POSE_FIST, 0.6), (None, config.CV_HOLD_MAX_SECONDS + 1)])
     assert out == [GRAB]
     out, _ = run(m, [(POSE_OPEN, 1.0)], t0=t)
-    assert out == []  # the expired grab is gone: this open palm releases nothing
+    assert out == []  # too much time passed since the closed hand: nothing to release
 
 
 def test_a_second_grab_is_blocked_during_the_cooldown_then_allowed():
     m = PalmMachine()
     out, t = run(m, [(POSE_OPEN, 0.5), (POSE_FIST, 0.6), (POSE_OPEN, 0.6)])
     assert out == [GRAB, RELEASE]
-    out, t = run(m, [(POSE_FIST, 0.6)], t0=t)  # right away: inside the cooldown
+    out, t = run(m, [(POSE_FIST, 0.6), (POSE_OPEN, 0.6)], t0=t)  # right away: inside the cooldown
     assert out == []
     out, _ = run(m, [(POSE_OPEN, 0.6), (POSE_FIST, 0.6)], t0=t + config.CV_COPY_COOLDOWN_SECONDS)
     assert out == [GRAB]

@@ -131,7 +131,8 @@ class PeerHarness:
             self.core, self.connections, self.limiter, clock=lambda: self.mono, accept_timeout=30
         )
         self.auth = Authenticator(self.core, NonceCache(), self.limiter)
-        self.app = create_app(PeerContext(self.core, self.connections, self.receiver, self.auth))
+        self.ctx = PeerContext(self.core, self.connections, self.receiver, self.auth)
+        self.app = create_app(self.ctx)
         self.http = TestClient(self.app, raise_server_exceptions=False)
         self.alice = new_identity(tmp_path, "alice")
         self.bob = new_identity(tmp_path, "bob")
