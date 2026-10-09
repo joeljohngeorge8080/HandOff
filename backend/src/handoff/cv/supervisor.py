@@ -28,6 +28,7 @@ log = logging.getLogger(__name__)
 STATES = frozenset({"off", "starting", "tracking", "no_hand", "error"})
 ERROR_CODES = frozenset({"CV_UNAVAILABLE", "CV_UNSUPPORTED_SESSION", "CV_CAMERA_UNAVAILABLE"})
 FORWARDED_EVENTS = frozenset({"gesture_detected", "direction_detected"})
+PALM_EVENTS = frozenset({"grab", "release"})  # acted on by the core's CopyBridge, never forwarded
 DIRECTIONS = frozenset({"left", "right", "up", "down"})
 _NAME = re.compile(r"[a-z_]{1,32}")
 MAX_MESSAGE = 200
@@ -77,6 +78,8 @@ class CvSupervisor:
         self._state: dict[str, str] = {"state": "off", "message": ""}
         self._window_start = 0.0
         self._window_count = 0
+        self.on_grab: Callable[[], None] | None = None  # set by Network once sending is possible
+        self.on_release: Callable[[], None] | None = None
 
     # ----- public ---------------------------------------------------------------------
 
@@ -196,6 +199,8 @@ class CvSupervisor:
             self._on_status(msg)
         elif name in FORWARDED_EVENTS:
             self._on_event(name, msg)
+        elif name in PALM_EVENTS:
+            self._on_palm(name)
 
     def _on_status(self, msg: dict[str, Any]) -> None:
         state, text, code = msg.get("state"), msg.get("message", ""), msg.get("code", "")
@@ -210,6 +215,25 @@ class CvSupervisor:
                 self._set("error", text[:MAX_MESSAGE], str(code))
             elif (state, text) != (self._state["state"], self._state["message"]):
                 self._set(state, text[:MAX_MESSAGE])
+
+    def _on_palm(self, name: str) -> None:
+        """The hand grabbed or released (ADR-057). The worker names no file: the handler reads
+        the clipboard itself. Run off the reader thread, so a slow import never stalls status."""
+        with self._lock:
+            if self._proc is None or self._stopping:
+                return
+            handler = self.on_grab if name == "grab" else self.on_release
+        if handler is not None:
+            threading.Thread(
+                target=self._run_handler, args=(handler,), daemon=True, name=f"cv-{name}"
+            ).start()
+
+    @staticmethod
+    def _run_handler(handler: Callable[[], None]) -> None:
+        try:
+            handler()
+        except Exception:
+            log.exception("Hand-control %s handler failed", getattr(handler, "__name__", "?"))
 
     def _on_event(self, name: str, msg: dict[str, Any]) -> None:
         data: dict[str, Any] = {"event": name}

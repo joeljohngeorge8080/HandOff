@@ -13,6 +13,7 @@ import logging
 import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import IO
 
@@ -27,6 +28,7 @@ from handoff.cv.gestures import (
     Move,
     Up,
 )
+from handoff.cv.palm import GRAB, RELEASE, PalmMachine
 from handoff.cv.pointer import PointerBackend, PyAutoGuiPointer
 from handoff.cv.samples import SampleBuilder
 from handoff.errors import HandOffError
@@ -67,17 +69,40 @@ class Emitter:
     def gesture(self, name: str) -> None:
         self._write({"event": "gesture_detected", "gesture": name, "confidence": 1.0})
 
+    def palm(self, name: str) -> None:
+        """`grab` / `release` (ADR-052). The core, not this process, decides what they mean."""
+        self._write({"event": name})
+
 
 class Controller:
     """Applies GestureMachine actions to the pointer. The only place that presses buttons."""
 
-    def __init__(self, pointer: PointerBackend, emitter: Emitter) -> None:
+    def __init__(
+        self,
+        pointer: PointerBackend,
+        emitter: Emitter,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
         self.pointer = pointer
         self.emitter = emitter
         self.machine = GestureMachine()
+        self.palm = PalmMachine()
+        self._sleep = sleep
 
     def tick(self, now: float, sample: HandSample | None) -> None:
         self._apply(self.machine.step(now, sample))
+        seen = sample is not None and now - sample.t <= config.CV_LOST_GRACE_SECONDS
+        for event in self.palm.step(now, sample.pose if seen and sample else None):
+            self._palm_event(event)
+
+    def _palm_event(self, event: str) -> None:
+        if event == GRAB:
+            if self.machine.pressed:
+                return  # a drag is in progress: Ctrl+C would copy the wrong thing
+            self.pointer.copy()  # the file manager puts the selection on the clipboard
+            self._sleep(config.CV_COPY_SETTLE_SECONDS)
+        if event in (GRAB, RELEASE):
+            self.emitter.palm(event)
 
     def _apply(self, actions: list[Action]) -> None:
         for a in actions:
@@ -122,7 +147,7 @@ def run(
     stop = threading.Event()
     latest: list[HandSample | None] = [None]
     lock = threading.Lock()
-    builder = SampleBuilder(pointer.screen_size())
+    builder = SampleBuilder(pointer.screen_size(), pointer.position)
 
     def watch_stdin() -> None:
         with contextlib.suppress(OSError, ValueError):

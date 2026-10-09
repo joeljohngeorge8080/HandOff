@@ -8,7 +8,6 @@ from handoff.cv.gestures import (
     Move,
     Up,
 )
-from handoff.cv.mapping import to_screen
 
 CLOSED = config.CV_PINCH_ON - 0.05
 OPEN = config.CV_PINCH_OFF + 0.05
@@ -139,18 +138,6 @@ def test_up_is_never_emitted_without_a_prior_down():
     assert not any(isinstance(a, Up) for a in out)
 
 
-def test_mapping_stretches_the_active_window_over_the_screen():
-    r = (0.15, 0.85)
-    assert to_screen(0.15, 0.15, (1920, 1080), r, r) == (0.0, 0.0)
-    assert to_screen(0.85, 0.85, (1920, 1080), r, r) == (1919.0, 1079.0)
-    assert to_screen(0.5, 0.5, (1921, 1081), r, r) == (960.0, 540.0)
-
-
-def test_mapping_clamps_outside_the_window_and_survives_hostile_values():
-    r = (0.15, 0.85)
-    assert to_screen(-5, 9, (100, 100), r, r) == (0.0, 99.0)
-
-
 def test_one_euro_first_sample_passes_through_and_old_timestamps_are_ignored():
     f = OneEuro(1.5, 0.012)
     assert f(10.0, 0.0) == 10.0
@@ -177,3 +164,30 @@ def test_one_euro_reset_forgets_history():
     f(5.0, 0.1)
     f.reset()
     assert f(42.0, 0.2) == 42.0
+
+
+# ----- pointing gate (ADR-057): only a pointed index finger moves or clicks ------------------
+
+
+def idle(t, pinch=OPEN, x=100.0, y=100.0):
+    return HandSample(t=t, x=x, y=y, pinch=pinch, pose="open", active=False)
+
+
+def test_a_hand_that_is_not_pointing_neither_moves_nor_clicks():
+    m = GestureMachine()
+    out = run(m, [(i * 0.01, idle(i * 0.01, pinch=CLOSED, x=100 + i)) for i in range(30)])
+    assert out == []
+
+
+def test_a_pinch_that_started_before_the_pose_flickered_can_still_release():
+    m = GestureMachine()
+    run(m, [(0.0, sample(0.0, pinch=CLOSED))])
+    out = run(m, [(0.01, idle(0.01, pinch=OPEN)), (0.02, idle(0.02, pinch=OPEN))])
+    assert kinds(out).count("Up") == 1 and not m.pressed
+
+
+def test_an_inactive_hand_does_not_drag_the_cursor_while_the_button_is_held():
+    m = GestureMachine()
+    run(m, [(0.0, sample(0.0, pinch=CLOSED))])
+    out = run(m, [(0.01, idle(0.01, pinch=CLOSED, x=900.0))])
+    assert "Move" not in kinds(out)

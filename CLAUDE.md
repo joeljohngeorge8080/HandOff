@@ -17,7 +17,7 @@ another input mechanism later and must never become the foundation.**
 - **Receiver chooses where files land**: setting `receive_directory` (default OS Desktop via `platformdirs`), picked with the native folder dialog. Validated by the receiver only (absolute, existing, writable, outside HandOff's data dir). Never from the network. Files are written with exclusive create (`name(1).ext`, never overwrite) and re-hashed during the copy. Received files are **not** managed storage (no `files` row; `transfer_files.file_id` NULL).
 - `receive_mode` setting is obsolete: keep the row, ignore it, never delete it. `GET /receive-mode`, `RECEIVE_MODE_DISABLED` and the IPC actions are removed.
 - UI layering (keep it): input adapters (OS drag-drop, edge proximity) → ADR-052 semantic events → pure state machine `edge/machine.ts` → view/animations. Success views are reachable **only** from a backend `completed`. The core pushes `transfer.updated` / `connection.changed`; polling is a slow fallback.
-- Phase 3 step 1 (ADR-056): opt-in hand control. A child process (`handoff --cv-worker`, `backend/src/handoff/cv/`) tracks the hand with MediaPipe and moves the OS pointer; a held pinch is the mouse button, so a hand drag is an ordinary OS drag into the existing drop path. It never calls transfer APIs. Setting `hand_control_enabled` (default off) is the only switch; frames are never stored or sent; the model is bundled, never downloaded. UI gets only `gesture_detected`/`direction_detected` with `source: "cv"`.
+- Phase 3 step 1 (ADR-056): opt-in hand control. A child process (`handoff --cv-worker`, `backend/src/handoff/cv/`) tracks the hand with MediaPipe and moves the OS pointer; the pointer is relative like a touchpad (hand out of view = lift and reposition), the cursor moves only while the index finger points (ADR-057); index+thumb touching is the mouse button, so a hand drag is an ordinary OS drag into the existing drop path. COPY gesture (ADR-057): open→closed palm presses Ctrl+C, closed→open palm makes the core send the clipboard files to the one connected peer through the normal `drop.send` pipeline; the worker itself never names a file or calls transfer APIs. Setting `hand_control_enabled` (default off) is the only switch; frames are never stored or sent; the model is bundled, never downloaded. UI gets only `gesture_detected`/`direction_detected` with `source: "cv"`.
 - Window rules: Wayland is forced to XWayland; transparency needs a compositor; Windows is untested by the author.
 
 ## Phase 1 Scope (MVP) — historical; where it conflicts with Phase 2 above, Phase 2 wins
@@ -185,7 +185,7 @@ update the docs. **Never change architecture silently.**
 | CV names `HAND_CLOSED`, `POINTER_MOVE`… (API §39–40, ARCHTECTURE §27) | Superseded by the canonical lowercase names in ADR-052 |
 
 ## Non-Negotiable Rules
-1. Never build anything listed under Phase 3 boundaries. Hand control is allowed only as ADR-056 defines it (opt-in, OS-pointer, never calls transfer APIs).
+1. Never build anything listed under Phase 3 boundaries. Hand control is allowed only as ADR-056 defines it (opt-in, OS-pointer; the worker never calls transfer APIs; the COPY gesture sends only via the core's validated `drop.send`, ADR-057).
 2. Never add cloud services, a central server, user accounts or authentication, antivirus, firewall changes, or auto-update.
 3. Never accept a file over 50 MB or one outside `.txt .jpg .jpeg .png .pdf`. Check on both sides.
 4. Never overwrite an existing file. Never modify or delete the user's original file.

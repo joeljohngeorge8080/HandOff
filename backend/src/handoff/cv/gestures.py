@@ -21,6 +21,8 @@ class HandSample:
     y: float
     pinch: float  # thumb-index distance / hand size
     reacquired: bool = False  # the hand came back after being lost: jump, do not glide
+    pose: str = "point"  # raw pose of this frame: point / open / fist / other
+    active: bool = True  # pointing (debounced): only then does the cursor follow or click
 
 
 @dataclass(frozen=True)
@@ -77,6 +79,12 @@ class GestureMachine:
             self._last_t = None
             return self._on_lost()
 
+        if not sample.active:
+            # Not pointing (ADR-057): the cursor stays put and nothing new is clicked. A button
+            # that is already down can still be let go, so a drag never gets stuck.
+            self._last_t = None
+            return self._release_if_open(sample)
+
         dt = max(now - self._last_t, 1e-4) if self._last_t is not None else 0.0
         self._last_t = now
         self._follow(sample, dt)
@@ -97,14 +105,20 @@ class GestureMachine:
                 config.CV_DRAG_RADIUS_PX
             ):
                 self._dragged = True
-            if sample.pinch > config.CV_PINCH_OFF:
-                self._release_count += 1
-                if self._release_count >= config.CV_RELEASE_FRAMES:
-                    self.pressed = False
-                    out += [Up(), Gesture("pinch_open")]
-            else:
-                self._release_count = 0
+            out += self._release_if_open(sample)
         return out
+
+    def _release_if_open(self, sample: HandSample) -> list[Action]:
+        if not self.pressed:
+            return []
+        if sample.pinch <= config.CV_PINCH_OFF:
+            self._release_count = 0
+            return []
+        self._release_count += 1
+        if self._release_count < config.CV_RELEASE_FRAMES:
+            return []
+        self.pressed = False
+        return [Up(), Gesture("pinch_open")]
 
     def _follow(self, s: HandSample, dt: float) -> None:
         if not self._placed or s.reacquired:

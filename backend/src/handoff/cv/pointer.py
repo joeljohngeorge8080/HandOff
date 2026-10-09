@@ -11,10 +11,12 @@ from handoff.errors import HandOffError
 
 class PointerBackend(Protocol):
     def screen_size(self) -> tuple[int, int]: ...
+    def position(self) -> tuple[int, int]: ...
     def move(self, x: int, y: int) -> None: ...
     def down(self) -> None: ...
     def up(self) -> None: ...
     def escape(self) -> None: ...
+    def copy(self) -> None: ...
 
 
 def check_session() -> None:
@@ -53,6 +55,10 @@ class PyAutoGuiPointer:
         w, h = self._g.size()
         return int(w), int(h)
 
+    def position(self) -> tuple[int, int]:
+        p = self._g.position()
+        return int(p[0]), int(p[1])
+
     def move(self, x: int, y: int) -> None:
         self._g.moveTo(x, y)
 
@@ -64,3 +70,6 @@ class PyAutoGuiPointer:
 
     def escape(self) -> None:
         self._g.press("esc")
+
+    def copy(self) -> None:
+        self._g.hotkey("ctrl", "c")

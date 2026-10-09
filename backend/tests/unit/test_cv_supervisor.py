@@ -217,3 +217,48 @@ def test_oversized_lines_are_dropped_without_killing_the_reader(tmp_path):
     sup.start()
     assert wait_for(lambda: any(n == "cv.event" for n, _ in seen))
     sup.stop()
+
+
+# ----- COPY gesture events (ADR-057) -----------------------------------------------------
+
+PALM_WORKER = """
+import sys, json
+for ev in ("grab", "release", "grab", "bogus"):
+    print(json.dumps({"event": ev, "paths": ["/etc/passwd"]}), flush=True)
+sys.stdin.read()
+"""
+
+
+def test_grab_and_release_reach_the_core_handlers_and_are_never_forwarded_to_the_ui(tmp_path):
+    sup, seen, _ = make(tmp_path, PALM_WORKER)
+    calls: list[str] = []
+    sup.on_grab = lambda: calls.append("grab")
+    sup.on_release = lambda: calls.append("release")
+    sup.start()
+    assert wait_for(lambda: len(calls) == 3)
+    assert sorted(calls) == ["grab", "grab", "release"]
+    assert not [n for n, _ in seen if n == "cv.event"]  # nothing, and no worker paths, forwarded
+    sup.stop()
+
+
+def test_a_failing_handler_does_not_take_the_reader_down(tmp_path):
+    sup, seen, _ = make(tmp_path, PALM_WORKER)
+    done = []
+
+    def boom():
+        done.append(1)
+        raise RuntimeError("handler bug")
+
+    sup.on_grab = boom
+    sup.start()
+    assert wait_for(lambda: len(done) == 2)
+    assert sup.status()["state"] in ("starting", "tracking", "no_hand")
+    sup.stop()
+
+
+def test_palm_events_are_ignored_when_no_handler_is_installed(tmp_path):
+    sup, seen, _ = make(tmp_path, PALM_WORKER)
+    sup.start()
+    time.sleep(0.3)
+    assert sup.status()["state"] != "error"
+    sup.stop()

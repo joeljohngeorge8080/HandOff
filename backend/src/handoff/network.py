@@ -15,6 +15,7 @@ from handoff.config import (
     PEER_PORT,
 )
 from handoff.core import Core
+from handoff.cv.copy_bridge import CopyBridge
 from handoff.devices.client import PeerClient
 from handoff.devices.connection import ConnectionManager
 from handoff.devices.discovery import (
@@ -96,6 +97,8 @@ class Network:
         self.sender = SenderService(core, self.connections, self.client)
         self.drops = DropService(core, self.connections, self.sender)
         self.drops.sweep_orphans()  # a crash can leave dropped copies behind
+        bridge = CopyBridge(core.events, self.drops.send)  # hand COPY gesture (ADR-057)
+        core.hand_control.on_grab, core.hand_control.on_release = bridge.on_grab, bridge.on_release
         self.connections.on_offline = lambda: self.sender.abort_active(
             "DEVICE_OFFLINE", "The device went offline."
         )
@@ -120,6 +123,7 @@ class Network:
 
     def stop(self) -> None:
         """Stop everything that was started; one failing part must not stop the rest."""
+        self.core.hand_control.on_grab = self.core.hand_control.on_release = None
         parts: list[tuple[str, Callable[[], None]]] = []
         if self._expiry:
             parts.append(("expiry", self._expiry.stop))
