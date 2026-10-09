@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 
 from handoff.audit import AuditEvent, record_event
@@ -15,6 +16,7 @@ from handoff.events import EventBus
 from handoff.files.manager import FileManager
 from handoff.history import HistoryService
 from handoff.identity import Identity, load_or_create_identity
+from handoff.opener import open_with_default_app
 from handoff.paths import AppPaths
 from handoff.settings import SettingsService
 
@@ -32,6 +34,7 @@ class Core:
         self.history: HistoryService
         self.events = EventBus()
         self.hand_control = CvSupervisor(self.events)
+        self.opener: Callable[[Path], None] = open_with_default_app  # replaced in tests
 
     def start(self) -> None:
         self.paths.ensure()

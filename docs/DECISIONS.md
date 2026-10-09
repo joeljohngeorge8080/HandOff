@@ -1315,6 +1315,26 @@ The user asked for a gesture that copies a selected file and sends it. A pure-CV
 
 ---
 
+# ADR-061: Open Received Files Automatically (Opt-In)
+
+**Status:** Accepted
+
+**Amends (ADR-045):** the "never execute received files" rule (CLAUDE.md, SECURITY) is clarified, not relaxed: opening hands a file to the user's own viewer and never runs it. ADR-055 (receiver's folder) gains one optional step after a transfer completes.
+
+**Decisions:**
+
+1. **A local, opt-in switch.** Setting `auto_open_received` (boolean, default `false`, persisted) is the only switch. It is changed only by the local user over IPC `settings.set`. No peer API reads or writes it, and the sender cannot ask the receiver to open anything.
+2. **What is opened.** After a transfer's outcome is committed, the receiver opens each file that was verified (SHA-256) and written to its folder, at the name actually written (`photo(1).jpg`). At most `MAX_AUTO_OPEN_FILES` (5) files per transfer are opened; the rest are saved normally. Failed files are never opened.
+3. **How.** The core calls the OS default handler (`xdg-open` on Linux, `os.startfile` on Windows) with an argument list and no shell, without waiting for the viewer. Immediately before launching it re-checks that the file is a regular, non-symlink file with an allowed extension (`.txt .jpg .jpeg .png .pdf`), so a future change to the allowed types cannot silently start opening programs.
+4. **It can never change the transfer.** It runs after the database commit. If the viewer is missing or fails, the failure is logged and audited (`AUTO_OPEN_FAILED`) and the transfer stays `completed`.
+5. **Audit.** `AUTO_OPEN_ENABLED`, `AUTO_OPEN_DISABLED`, `AUTO_OPEN_FAILED`.
+
+**Reason:** the hand-gesture handoff should feel instant: a picture copied on laptop 1 appears on laptop 2's screen.
+
+**Accepted risk:** a viewer (image decoder, PDF reader) parses data from a trusted LAN peer. The trust model already lets a trusted peer put those files on the desktop; auto-open only removes the user's double-click. Hence opt-in, off by default, allowed types only, and a cap on windows.
+
+---
+
 # Documentation Authority
 
 When documentation conflicts, use this priority:

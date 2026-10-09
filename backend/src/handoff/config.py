@@ -10,6 +10,8 @@ MAX_FILE_SIZE: int = 50 * 1024 * 1024
 
 # SECURITY §23: bound the size of a transfer request.
 MAX_FILES_PER_TRANSFER: int = 100
+# Auto-open (ADR-061): a large transfer must not open a hundred windows.
+MAX_AUTO_OPEN_FILES: int = 5
 
 # SECURITY §46: single, centralized port constant (advertised via discovery in M2).
 PEER_PORT: int = 8765

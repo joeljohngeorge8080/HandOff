@@ -21,7 +21,7 @@ from typing import Any
 from sqlalchemy.exc import IntegrityError
 
 from handoff.audit import REJECTION_EVENTS, AuditEvent, record_event
-from handoff.config import ACCEPT_TIMEOUT_SECONDS
+from handoff.config import ACCEPT_TIMEOUT_SECONDS, MAX_AUTO_OPEN_FILES
 from handoff.core import Core
 from handoff.db.models import Transfer, TransferFile, utcnow
 from handoff.db.repositories import TransferRepository
@@ -335,11 +335,34 @@ class ReceiverService:
         try:
             stored = self._copy_to_destination(job, results, created)
             with self.core.db.session() as s:
-                return self._record_results(s, job, results, stored)
+                reply = self._record_results(s, job, results, stored)
         except BaseException:
             for p in created:  # only files this transfer created; nothing pre-existing
                 p.unlink(missing_ok=True)
             raise
+        self._auto_open(job, [stored[i] for i in sorted(stored)])
+        return reply
+
+    def _auto_open(self, job: ReceiverJob, paths: list[Path]) -> None:
+        """Open verified, stored files when the user turned that on (ADR-061).
+
+        Runs only after the outcome is committed, so it can never change it: a viewer that
+        is missing or fails is logged and audited, and the transfer stays as recorded.
+        """
+        if not paths or not self.core.settings.auto_open_received():
+            return
+        for path in paths[:MAX_AUTO_OPEN_FILES]:
+            try:
+                self.core.opener(path)
+            except Exception as exc:  # any viewer problem; the transfer is already final
+                code = exc.code if isinstance(exc, HandOffError) else "OPEN_FAILED"
+                log.warning("Could not open received file %s (%s)", path.name, code, exc_info=True)
+                with self.core.db.session() as s:
+                    record_event(
+                        s, AuditEvent.AUTO_OPEN_FAILED, f"Could not open {path.name}.",
+                        device_id=job.source_device_id, transfer_id=job.manifest.transfer_id,
+                        metadata={"file_name": path.name, "code": code},
+                    )  # fmt: skip
 
     def _copy_to_destination(
         self, job: ReceiverJob, results: list[ExtractedFile], created: list[Path]
