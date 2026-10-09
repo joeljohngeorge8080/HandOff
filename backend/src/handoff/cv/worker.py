@@ -99,8 +99,11 @@ class Controller:
         if event == GRAB:
             if self.machine.pressed:
                 return  # a drag is in progress: Ctrl+C would copy the wrong thing
+            self.emitter.gesture("palm_grab")  # feedback first: the clipboard read takes a moment
             self.pointer.copy()  # the file manager puts the selection on the clipboard
             self._sleep(config.CV_COPY_SETTLE_SECONDS)
+        elif event == RELEASE:
+            self.emitter.gesture("palm_release")
         if event in (GRAB, RELEASE):
             self.emitter.palm(event)
 

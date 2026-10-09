@@ -25,6 +25,8 @@ const TONE: Record<ViewKind, Tone> = {
   receive_success: "ok",
   receive_failed: "bad",
   panel: "neutral",
+  hand_grab: "ready",
+  hand_release: "busy",
 };
 
 const WIDE: ReadonlySet<ViewKind> = new Set([
@@ -145,6 +147,16 @@ export class EdgeView {
           this.burst();
           this.motion.settle(this.chips);
         });
+        break;
+      case "hand_grab":
+        // Palm closing: the gateway pinches in and a ripple draws inward.
+        this.motion.squeeze(this.gateway);
+        this.burst();
+        break;
+      case "hand_release":
+        // Palm opening: the gateway swells and a ripple goes outward.
+        this.motion.open(this.gateway);
+        this.burst();
         break;
       case "rejected":
         this.motion.shake(this.gateway);

@@ -36,7 +36,10 @@ export type View =
   | { kind: "receiving"; transferId: string; progress: number; peer: string; count: number }
   | { kind: "receive_success"; peer: string; count: number; token: number }
   | { kind: "receive_failed"; message: string; token: number }
-  | { kind: "panel" };
+  | { kind: "panel" }
+  // Hand feedback only (a palm closing / opening). Not a transfer state: never a success view.
+  | { kind: "hand_grab"; token: number }
+  | { kind: "hand_release"; token: number };
 
 export type ViewKind = View["kind"];
 
@@ -76,11 +79,13 @@ export interface Step {
   effects: Effect[];
 }
 
-export const HOLD_MS = { rejected: 2200, success: 2600, failed: 3600 } as const;
+export const HOLD_MS = { rejected: 2200, success: 2600, failed: 3600, hand: 900 } as const;
 
 export const initialModel = (): Model => ({ view: { kind: "idle" }, peer: null, busy: false, seq: 0 });
 
-const PRE_DRAG: ReadonlySet<ViewKind> = new Set(["idle", "approach", "armed", "handle"]);
+/** Short hand-feedback views: a transfer, a drag or a new gesture may take over at any time. */
+const HAND_VIEWS: ReadonlySet<ViewKind> = new Set(["hand_grab", "hand_release"]);
+const PRE_DRAG: ReadonlySet<ViewKind> = new Set(["idle", "approach", "armed", "handle", "hand_grab", "hand_release"]);
 const DRAGGING: ReadonlySet<ViewKind> = new Set(["validating", "ready"]);
 const TERMINAL_VIEWS: ReadonlySet<ViewKind> = new Set([
   "rejected",
@@ -88,6 +93,8 @@ const TERMINAL_VIEWS: ReadonlySet<ViewKind> = new Set([
   "send_failed",
   "receive_success",
   "receive_failed",
+  "hand_grab",
+  "hand_release",
 ]);
 
 /** Views in which nothing has been sent yet: a drag can still come, go or be refused. */
@@ -166,11 +173,25 @@ export function reduce(m: Model, input: Input): Step {
       return m.view.kind === "panel" ? withView(m, { kind: "idle" }, [{ type: "window", mode: "idle" }]) : stay(m);
     case "timer":
       return onTimer(m, input.token);
-    // Hand-control feedback (gesture_detected, direction_detected) and pointer detail the view
-    // reads directly. A hand-held drag arrives as a real OS drag, so nothing else is needed here.
+    case "gesture_detected":
+      return onGesture(m, input.source, input.gesture);
+    // Pointer detail the view reads directly. A hand-held drag arrives as a real OS drag, so
+    // nothing else is needed here.
     default:
       return stay(m);
   }
+}
+
+/** The COPY gesture's two beats (ADR-057). Feedback only: it never starts or reports a transfer. */
+function onGesture(m: Model, source: string, gesture: string): Step {
+  if (source !== "cv" || !PRE_DRAG.has(m.view.kind)) return stay(m);
+  if (gesture === "palm_grab") {
+    return hold(m, (token) => ({ kind: "hand_grab", token }), HOLD_MS.hand, [stage]);
+  }
+  if (gesture === "palm_release") {
+    return hold(m, (token) => ({ kind: "hand_release", token }), HOLD_MS.hand, [stage]);
+  }
+  return stay(m);
 }
 
 function openPanel(m: Model): Step {
@@ -182,6 +203,7 @@ function onProximity(m: Model, phase: Proximity): Step {
   const k = m.view.kind;
   if (phase === "far") {
     // The pointer left: anything that was only waiting for a drop is over.
+    if (HAND_VIEWS.has(k)) return stay(m); // the hand animation ends on its own timer
     return preSend(m.view) && k !== "idle" ? withView(m, { kind: "idle" }) : stay(m);
   }
   if (!PRE_DRAG.has(k)) return stay(m);
@@ -354,5 +376,9 @@ export function labelFor(v: View, peerName: string | null): string {
       return `Receiving from ${v.peer}`;
     case "panel":
       return peerName ?? "";
+    case "hand_grab":
+      return MESSAGES.grabbed;
+    case "hand_release":
+      return MESSAGES.released;
   }
 }

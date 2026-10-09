@@ -54,7 +54,8 @@ button, select { font: inherit; }
 }
 #edge:is([data-view="armed"], [data-view="validating"], [data-view="ready"], [data-view="rejected"],
         [data-view="handle"], [data-view="sending"], [data-view="send_success"], [data-view="send_failed"],
-        [data-view="receiving"], [data-view="receive_success"], [data-view="receive_failed"]) .glass {
+        [data-view="receiving"], [data-view="receive_success"], [data-view="receive_failed"],
+        [data-view="hand_grab"], [data-view="hand_release"]) .glass {
   opacity: 1; transform: none;
 }
 #edge[data-tone="bad"] .glass { border-color: rgba(255, 111, 125, .5); box-shadow: inset 0 0 28px rgba(255,111,125,.12), -6px 0 28px rgba(0,0,0,.35); }
@@ -70,7 +71,8 @@ button, select { font: inherit; }
 }
 #edge:is([data-view="armed"], [data-view="validating"], [data-view="ready"], [data-view="rejected"],
         [data-view="handle"], [data-view="sending"], [data-view="send_success"], [data-view="send_failed"],
-        [data-view="receiving"], [data-view="receive_success"], [data-view="receive_failed"]) .gateway {
+        [data-view="receiving"], [data-view="receive_success"], [data-view="receive_failed"],
+        [data-view="hand_grab"], [data-view="hand_release"]) .gateway {
   opacity: 1; transform: translate(var(--pull-x), var(--pull-y)) scale(1);
 }
 #edge[data-view="ready"] .gateway { transform: translate(var(--pull-x), var(--pull-y)) scale(1.12); }
@@ -97,6 +99,8 @@ button, select { font: inherit; }
   transition: opacity .2s ease, transform .3s ease, background .2s ease;
 }
 #edge[data-view="ready"] .core { opacity: .95; transform: scale(1.08); }
+#edge:is([data-view="hand_grab"], [data-view="hand_release"]) .core { opacity: .9; }
+#edge:is([data-view="hand_grab"], [data-view="hand_release"]) .ring .fill { stroke-dashoffset: 0; }
 #edge:is([data-view="sending"], [data-view="receiving"]) .core { opacity: .8; }
 #edge:is([data-view="send_success"], [data-view="receive_success"], [data-view="send_failed"], [data-view="receive_failed"], [data-view="rejected"]) .core { opacity: .22; }
 
@@ -125,7 +129,7 @@ button, select { font: inherit; }
 @keyframes ripple-out { from { transform: scale(.9); opacity: .65; } to { transform: scale(2.7); opacity: 0; } }
 @keyframes ripple-in  { from { transform: scale(2.7); opacity: 0; } 60% { opacity: .55; } to { transform: scale(.9); opacity: 0; } }
 .ripple.go { animation: ripple-out .8s cubic-bezier(.2, .7, .3, 1) both; }
-#edge[data-view="receiving"] .ripple.go { animation-name: ripple-in; }
+#edge:is([data-view="receiving"], [data-view="hand_grab"]) .ripple.go { animation-name: ripple-in; }
 
 /* labels */
 .label {

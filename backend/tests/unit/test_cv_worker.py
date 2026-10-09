@@ -219,7 +219,8 @@ def test_grab_copies_the_selection_then_tells_the_core_after_the_clipboard_settl
     hold(c, "fist", t, 0.6)
     assert p.calls == [("copy",)]
     assert slept == [config.CV_COPY_SETTLE_SECONDS]
-    assert [x["event"] for x in lines(buf)] == ["grab"]
+    assert [x["event"] for x in lines(buf)] == ["gesture_detected", "grab"]
+    assert lines(buf)[0]["gesture"] == "palm_grab"  # the UI animates at once, before the copy
 
 
 def test_release_tells_the_core_and_presses_no_keys():
@@ -227,7 +228,9 @@ def test_release_tells_the_core_and_presses_no_keys():
     t = hold(c, "open", 0.0, 0.5)
     t = hold(c, "fist", t, 0.6)
     hold(c, "open", t, 0.6)
-    assert [x["event"] for x in lines(buf)] == ["grab", "release"]
+    assert [x.get("gesture", x["event"]) for x in lines(buf)] == [
+        "palm_grab", "grab", "palm_release", "release",
+    ]  # fmt: skip
     assert p.calls == [("copy",)]
 
 

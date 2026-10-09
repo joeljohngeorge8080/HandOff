@@ -8,6 +8,8 @@ export const DURATIONS = {
   settle: 520,
   shake: 360,
   burst: 700,
+  squeeze: 480,
+  open: 560,
 } as const;
 
 export type Keyframe2D = Keyframe & { transform: string; opacity: number };
@@ -37,6 +39,24 @@ export function settleFrames(): Keyframe2D[] {
     { transform: "scale(1)", opacity: 1, offset: 0 },
     { transform: "scale(1.06)", opacity: 1, offset: 0.4 },
     { transform: "scale(0.9)", opacity: 0, offset: 1 },
+  ];
+}
+
+/** Palm closing: the gateway pinches in, then springs back to rest. */
+export function squeezeFrames(): Keyframe2D[] {
+  return [
+    { transform: "scale(1)", opacity: 1, offset: 0 },
+    { transform: "scale(0.72)", opacity: 1, offset: 0.45 },
+    { transform: "scale(1)", opacity: 1, offset: 1 },
+  ];
+}
+
+/** Palm opening: the gateway swells out, then settles back to rest. */
+export function openFrames(): Keyframe2D[] {
+  return [
+    { transform: "scale(1)", opacity: 1, offset: 0 },
+    { transform: "scale(1.28)", opacity: 1, offset: 0.4 },
+    { transform: "scale(1)", opacity: 1, offset: 1 },
   ];
 }
 
@@ -99,6 +119,14 @@ export class Motion {
 
   shake(el: HTMLElement): void {
     this.play(el, shakeFrames(), DURATIONS.shake, 0, "none");
+  }
+
+  squeeze(el: HTMLElement): void {
+    this.play(el, squeezeFrames(), DURATIONS.squeeze, 0, "none");
+  }
+
+  open(el: HTMLElement): void {
+    this.play(el, openFrames(), DURATIONS.open, 0, "none");
   }
 
   /** Run `fn` once whatever is animating has finished (immediately if nothing is). */
