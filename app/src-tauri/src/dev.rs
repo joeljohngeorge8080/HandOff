@@ -5,6 +5,7 @@
 //!
 //!   <delay_ms> mode idle|armed|panel|stage      resize the real window
 //!   <delay_ms> input {"type":"proximity",...}    feed the edge state machine
+//!   <delay_ms> core {"event":"cv.event",...}     push a core event, as the sidecar would
 //!
 //! Lines starting with `#` are comments.
 
@@ -49,6 +50,12 @@ pub fn spawn_script(app: AppHandle) {
                 }
                 "input" => {
                     let _ = app.emit("dev-input", rest.to_string());
+                }
+                "core" => {
+                    if let Ok(event) = serde_json::from_str::<Value>(rest) {
+                        crate::edge::fx::on_core_event(&app, &event);
+                        let _ = app.emit("core-event", event);
+                    }
                 }
                 other => eprintln!("[dev] unknown command {other}"),
             }

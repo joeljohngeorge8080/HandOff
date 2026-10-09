@@ -1,9 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Edge window: core IPC, events, folder picker, notifications",
+  "description": "Edge window: core IPC, events, folder picker, notifications. Effects overlay: events only",
   "windows": [
-    "edge"
+    "edge",
+    "fx"
   ],
   "permissions": [
     "core:default",

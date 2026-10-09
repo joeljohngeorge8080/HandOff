@@ -1283,6 +1283,22 @@ The user asked for a gesture that copies a selected file and sends it. A pure-CV
 
 ---
 
+# ADR-059: Full-Screen Gesture Effects Overlay
+
+**Status:** Accepted
+
+**Why:** The palm grab and release deserve a visible reaction where the user is working, not only on the thin edge strip. The two effects (a liquid-glass bubble that implodes on grab, a burst plus five neon wavelets on release) were prototyped in a standalone PyQt6 script; PyQt6 would be a second GUI toolkit and a new dependency, so they are ported into the existing Tauri/TypeScript UI instead.
+
+**Decisions:**
+
+1. **A second Tauri window, label `fx`**: transparent, borderless, always on top, click-through (`set_ignore_cursor_events`), unfocusable, no drag-and-drop handler. It loads `fx.html` (a second Vite page) and draws on a canvas. It is created hidden and parked off-screen at startup.
+2. **It exists on screen only while an effect plays.** When the core pushes `gesture_detected` with `palm_grab` or `palm_release`, the Rust side makes the window click-through, covers the screen the cursor is on, shows it, tells the page where (the cursor, in CSS pixels) and what (`grab` / `drop`), then hides it about 1.6 s later. It never takes input, so it cannot swallow a click or an OS drop.
+3. **Feedback only.** The overlay listens for one local event (`fx-play`), validates it, and draws. It calls no core or peer API and starts no transfer. The edge strip's own grab/release views (ADR-057) are unchanged.
+4. **Time-based and bounded.** Effects advance by wall-clock time (a slow frame skips ahead), at most 4 run at once, nothing animates while none is playing, and `prefers-reduced-motion` disables them.
+5. **Limits.** Transparency needs a compositor on Linux (as the edge window already does). The effect is placed at the cursor, which stays where the user last pointed while the palm gestures are made. Windows is untested by the author.
+
+---
+
 # Documentation Authority
 
 When documentation conflicts, use this priority:
