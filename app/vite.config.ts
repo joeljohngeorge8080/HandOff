@@ -6,8 +6,6 @@ export default defineConfig({
   build: {
     target: "es2022",
     outDir: "dist",
-    // Two pages: the edge strip and the full-screen effects overlay (ADR-059).
-    rollupOptions: { input: { main: "index.html", fx: "fx.html" } },
   },
   test: { environment: "node" },
 });

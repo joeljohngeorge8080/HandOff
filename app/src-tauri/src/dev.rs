@@ -53,7 +53,6 @@ pub fn spawn_script(app: AppHandle) {
                 }
                 "core" => {
                     if let Ok(event) = serde_json::from_str::<Value>(rest) {
-                        crate::edge::fx::on_core_event(&app, &event);
                         let _ = app.emit("core-event", event);
                     }
                 }

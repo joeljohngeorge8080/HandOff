@@ -23,6 +23,13 @@ def kinds(actions):
     return [type(a).__name__ for a in actions]
 
 
+def press(m, x=100.0):
+    """Pinch closed for CV_PRESS_FRAMES camera frames, ending at t=0: the button is down."""
+    n = config.CV_PRESS_FRAMES
+    run(m, [(-0.01 * i, sample(-0.01 * i, x=x, pinch=CLOSED)) for i in range(n - 1, -1, -1)])
+    assert m.pressed
+
+
 def run(m, frames):
     """frames: list of (t, HandSample|None); returns all actions."""
     out = []
@@ -48,7 +55,7 @@ def test_a_relaxed_hand_never_presses_or_clicks():
 
 def test_no_click_follows_a_drop():
     m = GestureMachine()
-    run(m, [(0.0, sample(0.0, pinch=CLOSED))])
+    press(m)
     pinches = [OPEN, OPEN, RELAXED, RELAXED]
     out = run(m, [(0.01 * i, sample(0.01 * i, pinch=p)) for i, p in enumerate(pinches, 1)])
     assert kinds(out).count("Up") == 1 and kinds(out).count("Down") == 0
@@ -56,14 +63,14 @@ def test_no_click_follows_a_drop():
 
 def test_hysteresis_keeps_the_button_down_between_the_thresholds():
     m = GestureMachine()
-    run(m, [(0.0, sample(0.0, pinch=CLOSED))])
+    press(m)
     out = run(m, [(0.01 * i, sample(0.01 * i, pinch=IN_BETWEEN)) for i in range(1, 20)])
     assert m.pressed and "Up" not in kinds(out)
 
 
 def test_one_noisy_open_frame_does_not_release():
     m = GestureMachine()
-    run(m, [(0.0, sample(0.0, pinch=CLOSED))])
+    press(m)
     run(m, [(0.01, sample(0.01, pinch=OPEN))])
     run(m, [(0.02, sample(0.02, pinch=CLOSED))])
     assert m.pressed
@@ -73,7 +80,7 @@ def test_one_noisy_open_frame_does_not_release():
 
 def test_losing_the_hand_mid_drag_cancels_the_drag_before_releasing():
     m = GestureMachine()
-    run(m, [(0.0, sample(0.0, x=100, pinch=CLOSED))])
+    press(m, x=100)
     # drag well past the radius
     for i in range(1, 30):
         t = i * 0.01
@@ -85,7 +92,7 @@ def test_losing_the_hand_mid_drag_cancels_the_drag_before_releasing():
 
 def test_losing_the_hand_during_a_plain_press_just_releases_without_esc():
     m = GestureMachine()
-    run(m, [(0.0, sample(0.0, pinch=CLOSED))])
+    press(m)
     out = m.step(5.0, None)
     assert kinds(out)[0] == "Up" and not any(isinstance(a, CancelDrag) for a in out)
 
@@ -97,6 +104,7 @@ def test_a_hand_that_is_missing_while_idle_does_nothing():
 
 def test_stale_sample_within_grace_still_counts_as_tracking():
     m = GestureMachine()
+    m.step(0.19, sample(-0.01, pinch=CLOSED))
     out = m.step(0.2, sample(0.0, pinch=CLOSED))  # 0.2 s old < 0.3 s grace
     assert "Down" in kinds(out)
 
@@ -119,16 +127,19 @@ def test_move_is_emitted_only_when_the_pixel_changes():
 
 def test_press_happens_at_the_cursor_not_the_raw_target():
     m = GestureMachine()
-    out = m.step(0.0, sample(0.0, x=50, y=60, pinch=CLOSED))
-    assert isinstance(out[0], Move) and (out[0].x, out[0].y) == (50, 60)
-    assert isinstance(out[1], Down)  # move first, then press
+    out = m.step(-0.01, sample(-0.01, x=50, y=60, pinch=CLOSED))
+    out += m.step(0.0, sample(0.0, x=50, y=60, pinch=CLOSED))
+    moves = [a for a in out if isinstance(a, Move)]
+    assert moves and all((a.x, a.y) == (50, 60) for a in moves)
+    assert kinds(out).index("Down") > kinds(out).index("Move")  # move first, then press
 
 
 def test_release_after_losing_hand_allows_pressing_again():
     m = GestureMachine()
-    run(m, [(0.0, sample(0.0, pinch=CLOSED))])
+    press(m)
     m.step(5.0, None)
     out = m.step(5.1, sample(5.1, pinch=CLOSED, reacquired=True))
+    out += m.step(5.13, sample(5.13, pinch=CLOSED))
     assert any(isinstance(a, Down) for a in out)
 
 
@@ -181,13 +192,25 @@ def test_a_hand_that_is_not_pointing_neither_moves_nor_clicks():
 
 def test_a_pinch_that_started_before_the_pose_flickered_can_still_release():
     m = GestureMachine()
-    run(m, [(0.0, sample(0.0, pinch=CLOSED))])
+    press(m)
     out = run(m, [(0.01, idle(0.01, pinch=OPEN)), (0.02, idle(0.02, pinch=OPEN))])
     assert kinds(out).count("Up") == 1 and not m.pressed
 
 
 def test_an_inactive_hand_does_not_drag_the_cursor_while_the_button_is_held():
     m = GestureMachine()
-    run(m, [(0.0, sample(0.0, pinch=CLOSED))])
+    press(m)
     out = run(m, [(0.01, idle(0.01, pinch=CLOSED, x=900.0))])
     assert "Move" not in kinds(out)
+
+
+def test_a_single_frame_dip_of_the_pinch_does_not_click():
+    # measured: tracking jitter dips the pinch below the threshold for one frame
+    m = GestureMachine()
+    pinches = [RELAXED, RELAXED, CLOSED, RELAXED, RELAXED, CLOSED, RELAXED]
+    frames = [(i * 0.033, sample(i * 0.033, pinch=p)) for i, p in enumerate(pinches)]
+    out = []
+    for t, s in frames:  # several control ticks per camera frame, as in the worker
+        for k in range(4):
+            out += m.step(t + k * 0.008, s)
+    assert "Down" not in kinds(out)

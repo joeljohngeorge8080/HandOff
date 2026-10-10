@@ -23,6 +23,7 @@ class HandSample:
     reacquired: bool = False  # the hand came back after being lost: jump, do not glide
     pose: str = "point"  # raw pose of this frame: point / open / fist / other
     active: bool = True  # pointing (debounced): only then does the cursor follow or click
+    scroll_y: float | None = None  # scroll pose (debounced): smoothed hand height, else None
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,8 @@ class GestureMachine:
         self._last_pos: tuple[int, int] | None = None
         self._down_at = (0.0, 0.0)
         self._dragged = False
+        self._press_frames = 0  # consecutive camera frames with the pinch closed
+        self._press_t: float | None = None
 
     @property
     def mode(self) -> str:
@@ -94,7 +97,7 @@ class GestureMachine:
             out.append(Move(*pos))
 
         if not self.pressed:
-            if sample.pinch < config.CV_PINCH_ON:
+            if self._pinch_held(sample):
                 self.pressed = True
                 self._release_count = 0
                 self._dragged = False
@@ -107,6 +110,17 @@ class GestureMachine:
                 self._dragged = True
             out += self._release_if_open(sample)
         return out
+
+    def _pinch_held(self, sample: HandSample) -> bool:
+        """Closed for CV_PRESS_FRAMES distinct camera frames (the loop ticks faster than the
+        camera, so the same frame seen twice counts once)."""
+        if sample.pinch >= config.CV_PINCH_ON:
+            self._press_frames, self._press_t = 0, None
+            return False
+        if sample.t != self._press_t:
+            self._press_frames += 1
+            self._press_t = sample.t
+        return self._press_frames >= config.CV_PRESS_FRAMES
 
     def _release_if_open(self, sample: HandSample) -> list[Action]:
         if not self.pressed:

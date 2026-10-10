@@ -17,6 +17,7 @@ class PointerBackend(Protocol):
     def up(self) -> None: ...
     def escape(self) -> None: ...
     def copy(self) -> None: ...
+    def scroll(self, steps: int) -> None: ...
 
 
 def check_session() -> None:
@@ -73,3 +74,6 @@ class PyAutoGuiPointer:
 
     def copy(self) -> None:
         self._g.hotkey("ctrl", "c")
+
+    def scroll(self, steps: int) -> None:
+        self._g.scroll(steps)  # wheel notches; positive scrolls up

@@ -33,7 +33,9 @@ class Core:
         self.files: FileManager
         self.history: HistoryService
         self.events = EventBus()
-        self.hand_control = CvSupervisor(self.events)
+        self.hand_control = CvSupervisor(
+            self.events, scroll=lambda: self.settings.hand_scroll_enabled()
+        )
         self.opener: Callable[[Path], None] = open_with_default_app  # replaced in tests
 
     def start(self) -> None:

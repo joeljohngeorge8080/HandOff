@@ -39,14 +39,12 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle().clone();
             let sidecar = Sidecar::spawn(app.path().resource_dir().ok(), move |event| {
-                edge::fx::on_core_event(&handle, &event); // ADR-059: hand-gesture effects
                 let _ = handle.emit("core-event", event);
             })
             .map_err(|e| e.to_string())?;
             app.manage(Core(Arc::new(sidecar)));
             let edge_state = edge::window::start(app.handle())?;
             app.manage(edge_state);
-            edge::fx::create(app.handle())?;
             edge::window::spawn_watcher(app.handle().clone());
             #[cfg(debug_assertions)]
             dev::spawn_script(app.handle().clone());

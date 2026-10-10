@@ -15,7 +15,13 @@ from handoff.errors import HandOffError
 
 # Keys the UI may change. device_name is derived (DATABASE §12); schema_version is internal.
 USER_EDITABLE = frozenset(
-    {"history_retention", "receive_directory", "hand_control_enabled", "auto_open_received"}
+    {
+        "history_retention",
+        "receive_directory",
+        "hand_control_enabled",
+        "hand_scroll_enabled",
+        "auto_open_received",
+    }
 )
 # `receive_mode` is obsolete since ADR-055: old databases keep the row, nothing reads it.
 _HIDDEN = frozenset({"schema_version", "receive_mode"})
@@ -44,6 +50,8 @@ class SettingsService:
                 repo.set("hand_control_enabled", False)  # opt-in camera (ADR-056)
             if repo.get("auto_open_received") is None:
                 repo.set("auto_open_received", False)  # opt-in (ADR-061)
+            if repo.get("hand_scroll_enabled") is None:
+                repo.set("hand_scroll_enabled", False)  # opt-in two-finger scroll (ADR-064)
             if repo.get("device_name") is None:
                 repo.set("device_name", derive_device_name(hostname))
 
@@ -96,6 +104,8 @@ class SettingsService:
         if key == "auto_open_received":
             self.set_auto_open(value)
             return
+        if key == "hand_scroll_enabled" and not isinstance(value, bool):
+            raise HandOffError("INVALID_REQUEST", "hand_scroll_enabled must be true or false.")
         if key == "history_retention" and (
             isinstance(value, bool) or not isinstance(value, int) or value < 0
         ):
@@ -107,6 +117,9 @@ class SettingsService:
 
     def hand_control_enabled(self) -> bool:
         return self.get("hand_control_enabled") is True
+
+    def hand_scroll_enabled(self) -> bool:
+        return self.get("hand_scroll_enabled") is True
 
     def set_hand_control(self, value: object) -> bool:
         if not isinstance(value, bool):

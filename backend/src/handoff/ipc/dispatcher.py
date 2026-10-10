@@ -116,6 +116,8 @@ class Dispatcher:
                 self.core.hand_control.start()
             else:
                 self.core.hand_control.stop()
+        elif key == "hand_scroll_enabled" and self.core.settings.hand_control_enabled():
+            self.core.hand_control.restart()  # the worker reads the switch when it starts
         return {"settings": self.core.settings.get_all()}
 
     def _cv_status(self, _p: dict[str, Any]) -> dict[str, Any]:

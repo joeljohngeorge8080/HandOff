@@ -11,7 +11,9 @@ from handoff.errors import HandOffError
 from handoff.events import EventBus
 
 
-def make(tmp_path, script=None, *, preflight=lambda: None, model_exists=True, release=None):
+def make(
+    tmp_path, script=None, *, preflight=lambda: None, model_exists=True, release=None, scroll=None
+):
     bus = EventBus()
     seen: list[tuple[str, dict]] = []
     bus.subscribe(lambda n, d: seen.append((n, d)))
@@ -27,6 +29,7 @@ def make(tmp_path, script=None, *, preflight=lambda: None, model_exists=True, re
         preflight=preflight,
         release_button=release or (lambda: released.append(1)),
         **kwargs,
+        **({"scroll": scroll} if scroll else {}),
     )
     return sup, seen, released
 
@@ -261,4 +264,32 @@ def test_palm_events_are_ignored_when_no_handler_is_installed(tmp_path):
     sup.start()
     time.sleep(0.3)
     assert sup.status()["state"] != "error"
+    sup.stop()
+
+
+ECHO_ARGS = """
+import sys, json
+print(json.dumps({"event": "status", "state": "tracking", "message": " ".join(sys.argv[1:])}),
+      flush=True)
+sys.stdin.read()
+"""
+
+
+@pytest.mark.parametrize(("on", "args"), [(True, "--cv-scroll"), (False, "")])
+def test_the_worker_is_told_whether_scroll_is_on(tmp_path, on, args):
+    sup, seen, _ = make(tmp_path, ECHO_ARGS, scroll=lambda: on)
+    sup.start()
+    assert wait_for(lambda: sup.status()["state"] == "tracking")
+    assert sup.status()["message"] == args
+    sup.stop()
+
+
+def test_restart_respawns_the_worker_with_the_current_switch(tmp_path):
+    on = [False]
+    sup, seen, _ = make(tmp_path, ECHO_ARGS, scroll=lambda: on[0])
+    sup.start()
+    assert wait_for(lambda: sup.status()["state"] == "tracking")
+    on[0] = True
+    sup.restart()
+    assert wait_for(lambda: sup.status()["message"] == "--cv-scroll")
     sup.stop()

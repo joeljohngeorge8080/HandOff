@@ -1,5 +1,7 @@
 # Database Design
 
+> **ADR-064.** No schema change. New settings key `hand_scroll_enabled` (boolean, default false).
+>
 > **ADR-061.** No schema change. New settings key `auto_open_received` (boolean, default false). New audit events `AUTO_OPEN_ENABLED` / `AUTO_OPEN_DISABLED` / `AUTO_OPEN_FAILED`.
 >
 > **Phase 3 amendment (ADR-056).** No schema change. New settings key `hand_control_enabled` (boolean, default false). New audit events `HAND_CONTROL_ENABLED` / `HAND_CONTROL_DISABLED`.
