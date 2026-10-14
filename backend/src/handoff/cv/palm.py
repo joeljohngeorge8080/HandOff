@@ -34,12 +34,7 @@ class PalmMachine:
         if not math.isfinite(now) or now < self._last_now:
             return []
         self._last_now = now
-        raw = pose
         pose = self._stable(now, pose)
-        if raw == POSE_FIST and now >= self._cooldown_until and self._carried(now):
-            # A fist carried to this laptop is only the lead-in to a release, so it needs the
-            # short hold; the strict one above guards the start of a grab, which is the risky bit.
-            self._fist_seen = now
         if pose is None:
             return []
         if now < self._cooldown_until:
@@ -78,10 +73,6 @@ class PalmMachine:
             if self._held(now, p, hold) >= config.CV_PALM_AGREE * hold:
                 return p
         return None
-
-    def _carried(self, now: float) -> bool:
-        hold = config.CV_PALM_CARRY_FIST_SECONDS
-        return self._held(now, POSE_FIST, hold) >= config.CV_PALM_AGREE * hold
 
     def _held(self, now: float, pose: str, window: float) -> float:
         """Seconds of the last `window` spent in `pose`; 0 until a full window was watched."""
