@@ -16,6 +16,7 @@ from handoff.config import (
 )
 from handoff.core import Core
 from handoff.cv.copy_bridge import CopyBridge
+from handoff.cv.stash import PictureStash
 from handoff.devices.client import PeerClient, error_from_response
 from handoff.devices.connection import ConnectionManager
 from handoff.devices.discovery import (
@@ -99,11 +100,14 @@ class Network:
         self.drops = DropService(core, self.connections, self.sender)
         self.drops.sweep_orphans()  # a crash can leave dropped copies behind
         # Hand COPY gesture (ADR-057/058): grab holds here, release claims from the peer.
+        stash = PictureStash(core.paths.temp_dir / "held")
         bridge = CopyBridge(
             core.events,
             self.drops.send,
             self._claim_from_peer,
             lambda: peer.device_id if (peer := self.connections.active_peer()) else None,
+            stash=stash.save,
+            discard=stash.discard,
         )
         core.hand_control.on_grab, core.hand_control.on_release = bridge.on_grab, bridge.on_release
         self.connections.on_offline = lambda: self.sender.abort_active(

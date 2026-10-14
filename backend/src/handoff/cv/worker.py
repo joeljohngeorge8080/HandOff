@@ -74,6 +74,14 @@ class Emitter:
         self._write({"event": name})
 
 
+def _scroll_gain(speed: float) -> float:
+    """Wheel steps per frame-height of fingertip movement at `speed` (frame-heights/second)."""
+    lo, hi = config.CV_SCROLL_SPEED_SLOW, config.CV_SCROLL_SPEED_FAST
+    f = min(max((speed - lo) / (hi - lo), 0.0), 1.0)
+    slow, fast = config.CV_SCROLL_STEPS_SLOW, config.CV_SCROLL_STEPS_FAST
+    return slow + f * (fast - slow)
+
+
 class Controller:
     """Applies GestureMachine actions to the pointer. The only place that presses buttons."""
 
@@ -88,12 +96,41 @@ class Controller:
         self.machine = GestureMachine()
         self.palm = PalmMachine()
         self._sleep = sleep
+        self._scroll_t: float | None = None  # capture time of the last sample scrolled from
+        self._scroll_y: float | None = None
+        self._scroll_rest = 0.0  # fraction of a wheel step carried to the next frame
+        self._scroll_prev_t: float | None = None
 
     def tick(self, now: float, sample: HandSample | None) -> None:
         self._apply(self.machine.step(now, sample))
         seen = sample is not None and now - sample.t <= config.CV_LOST_GRACE_SECONDS
+        self._scroll(sample if seen else None)
         for event in self.palm.step(now, sample.pose if seen and sample else None):
             self._palm_event(event)
+
+    def _scroll(self, sample: HandSample | None) -> None:
+        """Turns the hand's height change into wheel steps, once per camera frame."""
+        if sample is None or sample.scroll_y is None or self.machine.pressed:
+            self._scroll_t = self._scroll_y = self._scroll_prev_t = None
+            self._scroll_rest = 0.0
+            return
+        if sample.t == self._scroll_t:
+            return  # the control loop runs faster than the camera: this frame was used
+        self._scroll_t = sample.t
+        prev, self._scroll_y = self._scroll_y, sample.scroll_y
+        prev_t, self._scroll_prev_t = self._scroll_prev_t, sample.t
+        if prev is None or prev_t is None or sample.reacquired or sample.t <= prev_t:
+            self._scroll_rest = 0.0
+            return
+        # Image y grows downwards and a positive step scrolls up. Natural: hand up (dy < 0)
+        # scrolls down, as two fingers on a touchpad move the content with them.
+        sign = 1.0 if config.CV_SCROLL_NATURAL else -1.0
+        dy = sample.scroll_y - prev
+        self._scroll_rest += sign * dy * _scroll_gain(abs(dy) / (sample.t - prev_t))
+        steps = int(self._scroll_rest)  # toward zero; the remainder carries over
+        if steps:
+            self._scroll_rest -= steps
+            self.pointer.scroll(steps)
 
     def _palm_event(self, event: str) -> None:
         if event == GRAB:
@@ -134,6 +171,7 @@ def run(
     out: IO[str],
     stdin: IO[str],
     pointer: PointerBackend | None = None,
+    scroll: bool = False,
 ) -> int:
     emitter = Emitter(out)
     emitter.status("starting")
@@ -150,7 +188,7 @@ def run(
     stop = threading.Event()
     latest: list[HandSample | None] = [None]
     lock = threading.Lock()
-    builder = SampleBuilder(pointer.screen_size(), pointer.position)
+    builder = SampleBuilder(pointer.screen_size(), pointer.position, scroll=scroll)
 
     def watch_stdin() -> None:
         with contextlib.suppress(OSError, ValueError):
@@ -199,7 +237,7 @@ def run(
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, scroll: bool = False) -> int:
     logging.basicConfig(stream=sys.stderr, level=logging.INFO)
     model = Path(argv[0]) if argv else Path(config.CV_MODEL_FILENAME)
     if sys.platform == "win32":
@@ -207,7 +245,7 @@ def main(argv: list[str] | None = None) -> int:
 
         ctypes.windll.winmm.timeBeginPeriod(1)  # type: ignore[attr-defined,unused-ignore]
     try:
-        return run(model, sys.stdout, sys.stdin)
+        return run(model, sys.stdout, sys.stdin, scroll=scroll)
     finally:
         if sys.platform == "win32":
             ctypes.windll.winmm.timeEndPeriod(1)  # type: ignore[attr-defined,unused-ignore]

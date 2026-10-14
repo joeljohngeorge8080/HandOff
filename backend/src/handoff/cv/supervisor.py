@@ -65,6 +65,7 @@ class CvSupervisor:
         preflight: Callable[[], None] = pointer_mod.check_session,
         release_button: Callable[[], None] = _release_button,
         clock: Callable[[], float] = time.monotonic,
+        scroll: Callable[[], bool] = lambda: False,
     ) -> None:
         self._events = events
         self._command = command
@@ -72,6 +73,7 @@ class CvSupervisor:
         self._preflight = preflight
         self._release_button = release_button
         self._clock = clock
+        self._scroll = scroll
         self._lock = threading.RLock()
         self._proc: subprocess.Popen[str] | None = None
         self._stopping = False
@@ -109,7 +111,8 @@ class CvSupervisor:
             self._stopping = False
             self._set("starting")
             try:
-                self._proc = self._spawn(self._command(model))
+                cmd = [*self._command(model), *(["--cv-scroll"] if self._scroll() else [])]
+                self._proc = self._spawn(cmd)
             except OSError as exc:
                 self._set("error", f"Could not start hand control: {exc}", "CV_UNAVAILABLE")
                 return self.status()
@@ -127,6 +130,11 @@ class CvSupervisor:
         with self._lock:
             self._set("off")
             return self.status()
+
+    def restart(self) -> dict[str, str]:
+        """Stop and start again, so the worker picks up a changed switch (scroll)."""
+        self.stop()
+        return self.start()
 
     # ----- internals ------------------------------------------------------------------
 

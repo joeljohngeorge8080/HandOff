@@ -39,7 +39,9 @@ export type View =
   | { kind: "panel" }
   // Hand feedback only (a palm closing / opening). Not a transfer state: never a success view.
   | { kind: "hand_grab"; token: number }
-  | { kind: "hand_release"; token: number };
+  | { kind: "hand_release"; token: number }
+  // The grabbed files, shown until the core says the grab is over (ADR-060). No timer here.
+  | { kind: "holding"; names: string[]; count: number };
 
 export type ViewKind = View["kind"];
 
@@ -51,6 +53,8 @@ export interface Model {
   busy: boolean;
   /** Counter that gives every terminal view its own timer token. */
   seq: number;
+  /** What the hand is holding (reported by the core); null when nothing. */
+  held: { names: string[]; count: number } | null;
 }
 
 export type Input =
@@ -63,6 +67,7 @@ export type Input =
   | { type: "transfer"; transfer: Transfer }
   | { type: "connection"; peer: string | null }
   | { type: "snapshot"; peer: string | null; active: Transfer | null }
+  | { type: "held"; names: string[]; count: number }
   | { type: "open_panel" }
   | { type: "close_panel" }
   | { type: "timer"; token: number };
@@ -81,11 +86,13 @@ export interface Step {
 
 export const HOLD_MS = { rejected: 2200, success: 2600, failed: 3600, hand: 900 } as const;
 
-export const initialModel = (): Model => ({ view: { kind: "idle" }, peer: null, busy: false, seq: 0 });
+export const initialModel = (): Model => ({ view: { kind: "idle" }, peer: null, busy: false, seq: 0, held: null });
 
 /** Short hand-feedback views: a transfer, a drag or a new gesture may take over at any time. */
-const HAND_VIEWS: ReadonlySet<ViewKind> = new Set(["hand_grab", "hand_release"]);
-const PRE_DRAG: ReadonlySet<ViewKind> = new Set(["idle", "approach", "armed", "handle", "hand_grab", "hand_release"]);
+const HAND_VIEWS: ReadonlySet<ViewKind> = new Set(["hand_grab", "hand_release", "holding"]);
+const PRE_DRAG: ReadonlySet<ViewKind> = new Set([
+  "idle", "approach", "armed", "handle", "hand_grab", "hand_release", "holding",
+]);
 const DRAGGING: ReadonlySet<ViewKind> = new Set(["validating", "ready"]);
 const TERMINAL_VIEWS: ReadonlySet<ViewKind> = new Set([
   "rejected",
@@ -175,6 +182,8 @@ export function reduce(m: Model, input: Input): Step {
       return onTimer(m, input.token);
     case "gesture_detected":
       return onGesture(m, input.source, input.gesture);
+    case "held":
+      return onHeld(m, input.names, input.count);
     // Pointer detail the view reads directly. A hand-held drag arrives as a real OS drag, so
     // nothing else is needed here.
     default:
@@ -192,6 +201,20 @@ function onGesture(m: Model, source: string, gesture: string): Step {
     return hold(m, (token) => ({ kind: "hand_release", token }), HOLD_MS.hand, [stage]);
   }
   return stay(m);
+}
+
+/** What the hand is holding changed (ADR-060). The core decides when it starts and ends. */
+function onHeld(m: Model, names: string[], count: number): Step {
+  if (count <= 0) {
+    const next: Model = { ...m, held: null };
+    return m.view.kind === "holding"
+      ? withView(next, { kind: "idle" }, [{ type: "window", mode: "idle" }])
+      : stay(next);
+  }
+  const held = { names, count };
+  const next: Model = { ...m, held };
+  if (!PRE_DRAG.has(m.view.kind)) return stay(next); // shown once the current view is over
+  return withView(next, { kind: "holding", names, count }, [stage]);
 }
 
 function openPanel(m: Model): Step {
@@ -346,6 +369,8 @@ function onTimer(m: Model, token: number): Step {
   const v = m.view;
   if (!TERMINAL_VIEWS.has(v.kind)) return stay(m);
   if (!("token" in v) || v.token !== token) return stay(m); // a stale timer from an earlier view
+  // Something is still held: go back to showing it, not to nothing.
+  if (m.held) return withView(m, { kind: "holding", ...m.held }, [stage]);
   return withView(m, { kind: "idle" }, [{ type: "window", mode: "idle" }]);
 }
 
@@ -380,5 +405,7 @@ export function labelFor(v: View, peerName: string | null): string {
       return MESSAGES.grabbed;
     case "hand_release":
       return MESSAGES.released;
+    case "holding":
+      return MESSAGES.holding(v.count);
   }
 }

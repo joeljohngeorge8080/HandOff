@@ -24,6 +24,10 @@ class FakeSupervisor:
         self._state = {"state": "off", "message": ""}
         return self._state
 
+    def restart(self):
+        self.calls.append("restart")
+        return self._state
+
     def status(self):
         return dict(self._state)
 
@@ -101,3 +105,31 @@ def test_core_close_stops_the_worker(paths):
     c.hand_control = fake
     c.close()
     assert fake.calls == ["stop"]
+
+
+# ----- two-finger scroll switch (ADR-064) ----------------------------------------------------
+
+
+def test_scroll_is_off_by_default(d):
+    assert call(d, "settings.get")["result"]["settings"]["hand_scroll_enabled"] is False
+
+
+def test_switching_scroll_restarts_a_running_worker_so_it_takes_effect(d, core):
+    call(d, "settings.set", {"key": "hand_control_enabled", "value": True})
+    r = call(d, "settings.set", {"key": "hand_scroll_enabled", "value": True})
+    assert r["result"]["settings"]["hand_scroll_enabled"] is True
+    assert core.hand_control.calls == ["start", "restart"]
+    assert core.settings.hand_scroll_enabled() is True
+
+
+def test_switching_scroll_with_hand_control_off_starts_no_camera(d, core):
+    call(d, "settings.set", {"key": "hand_scroll_enabled", "value": True})
+    assert core.hand_control.calls == []
+    assert core.settings.hand_scroll_enabled() is True
+
+
+@pytest.mark.parametrize("bad", ["true", 1, None, []])
+def test_scroll_accepts_only_a_real_boolean(d, core, bad):
+    r = call(d, "settings.set", {"key": "hand_scroll_enabled", "value": bad})
+    assert r["error"]["code"] == "INVALID_REQUEST"
+    assert core.settings.hand_scroll_enabled() is False

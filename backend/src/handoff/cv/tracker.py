@@ -38,7 +38,7 @@ class HandTracker:
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
         cap.set(cv2.CAP_PROP_FPS, config.CV_CAMERA_FPS)
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, config.CV_CAMERA_BUFFERS)
         if not cap.isOpened():
             cap.release()
             raise HandOffError("CV_CAMERA_UNAVAILABLE", "Could not open the camera.")
@@ -49,9 +49,9 @@ class HandTracker:
                     base_options=BaseOptions(model_asset_path=str(model_path)),
                     running_mode=vision.RunningMode.VIDEO,
                     num_hands=1,
-                    min_hand_detection_confidence=0.5,
-                    min_hand_presence_confidence=0.5,
-                    min_tracking_confidence=0.5,
+                    min_hand_detection_confidence=config.CV_MIN_DETECTION_CONFIDENCE,
+                    min_hand_presence_confidence=config.CV_MIN_PRESENCE_CONFIDENCE,
+                    min_tracking_confidence=config.CV_MIN_TRACKING_CONFIDENCE,
                 )
             )
         except Exception as exc:

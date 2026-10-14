@@ -1244,7 +1244,7 @@ Hand control is one more input mechanism (DECISIONS §47). It drives the same OS
 
 # ADR-057: Pointing-Only Cursor and the COPY Gesture (Phase 3, step 2)
 
-**Status:** Accepted (decisions 3 and 4 amended by ADR-058)
+**Status:** Accepted (decisions 3 and 4 amended by ADR-058; decision 3's timings by ADR-063)
 
 **Supersedes / amends (ADR-045):** ADR-056 decision 1 (pointer moves whenever a hand is visible), decision 2 and the statement "never calls transfer APIs" (the send path gains a second trigger), decision 3 (`grab` / `release` are now consumed by the core).
 
@@ -1280,6 +1280,132 @@ The user asked for a gesture that copies a selected file and sends it. A pure-CV
 4. **The send is the normal send.** After a valid claim the holder runs the existing `drop.send` (`files.import` -> `transfer.create` -> signed TLS) to the claimer, with every ADR-054/055 rule unchanged: allowed types, <= 50 MB, no folders/symlinks/renamed executables, all-or-nothing, one active transfer. The claimer receives it as any incoming transfer and the receive animation plays.
 5. **Both laptops need hand control on** (each camera sees its own half of the gesture). A claim carries no file name, path or hash, so a malicious peer can at most trigger a send of what the user already grabbed to itself, the one device the user connected.
 6. **Feedback.** The core publishes `copied`, `copy_empty`, `copy_failed`, `copy_cancelled` (holder), `claimed`, `claim_failed` (claimer) and `sent`, `send_failed` (holder) as `gesture_detected`.
+
+---
+
+# ADR-059: Full-Screen Gesture Effects Overlay
+
+**Status:** Superseded by ADR-064 (the overlay window and its effects were removed). Earlier, its effects (bubble, burst and wavelets) were superseded by ADR-062.
+
+**Why:** The palm grab and release deserve a visible reaction where the user is working, not only on the thin edge strip. The two effects (a liquid-glass bubble that implodes on grab, a burst plus five neon wavelets on release) were prototyped in a standalone PyQt6 script; PyQt6 would be a second GUI toolkit and a new dependency, so they are ported into the existing Tauri/TypeScript UI instead.
+
+**Decisions:**
+
+1. **A second Tauri window, label `fx`**: transparent, borderless, always on top, click-through (`set_ignore_cursor_events`), unfocusable, no drag-and-drop handler. It loads `fx.html` (a second Vite page) and draws on a canvas. It is created hidden and parked off-screen at startup.
+2. **It exists on screen only while an effect plays.** When the core pushes `gesture_detected` with `palm_grab` or `palm_release`, the Rust side makes the window click-through, covers the screen the cursor is on, shows it, tells the page where (the cursor, in CSS pixels) and what (`grab` / `drop`), then hides it about 1.6 s later. It never takes input, so it cannot swallow a click or an OS drop.
+3. **Feedback only.** The overlay listens for one local event (`fx-play`), validates it, and draws. It calls no core or peer API and starts no transfer. The edge strip's own grab/release views (ADR-057) are unchanged.
+4. **Time-based and bounded.** Effects advance by wall-clock time (a slow frame skips ahead), at most 4 run at once, nothing animates while none is playing, and `prefers-reduced-motion` disables them.
+5. **Limits.** Transparency needs a compositor on Linux (as the edge window already does). The effect is placed at the cursor, which stays where the user last pointed while the palm gestures are made. Windows is untested by the author.
+
+---
+
+# ADR-060: Show What Is Held, and Hold a Picture Copied in a Browser
+
+**Status:** Accepted
+
+**Amends (ADR-045):** ADR-057 (what a grab can hold), API §42 (a new local push event).
+
+**Decisions:**
+
+1. **The strip shows what the hand is holding.** While a grab is held the edge strip stays up with a chip per file (name, type badge, `+N` for the rest) and the label "Holding N files". The core pushes `hand.held` `{names, count}` when a grab starts, replaces it on a new grab, and pushes `{names: [], count: 0}` when the grab ends (cancelled, sent, expired). The UI follows the core; it has no timer of its own for this. The event carries bare file names (cleaned, at most 20 of at most 120 characters, plus the real count), never paths.
+2. **A picture copied in a browser can be held.** A browser's "Copy image" puts a picture on the clipboard, not a file. If a grab finds no files but finds a picture, the core saves it as a PNG in its own scratch directory (`temp/held/`, generated name `image-YYYYMMDD-HHMMSS.png`, exclusive create, user-only permissions) and holds that file. Linux reads the `image/png` clipboard format (tkinter); Windows reads the registered `PNG` format. Anything that is not a real PNG (signature check, trimmed at `IEND`) or is over 50 MB is refused (`copy_empty` / `copy_failed`). Files on the clipboard always win over a picture.
+3. **The picture then travels exactly like any other file**: `drop.send` validates it (type, size, executable header) and imports a managed copy, so nothing about the transfer path changes. The scratch copy is deleted when the grab is cancelled, replaced, expires or has been handed to the send.
+4. **The grab itself is unchanged**: it still only presses Ctrl+C. The user must have the image selected so the browser copies it (for example Ctrl+A on an image-only tab, or "Copy image" once). Right-click automation and Ctrl+A fallbacks were considered and rejected: they inject input into whatever window has focus.
+5. **Limits.** Windows pictures arrive only if the browser publishes the `PNG` clipboard format (Chrome, Edge and Firefox do); a bitmap-only (`CF_DIB`) clipboard is not converted. A very large clipboard picture is read into memory before it is refused.
+
+---
+
+# ADR-061: Open Received Files Automatically (Opt-In)
+
+**Status:** Accepted
+
+**Amends (ADR-045):** the "never execute received files" rule (CLAUDE.md, SECURITY) is clarified, not relaxed: opening hands a file to the user's own viewer and never runs it. ADR-055 (receiver's folder) gains one optional step after a transfer completes.
+
+**Decisions:**
+
+1. **A local, opt-in switch.** Setting `auto_open_received` (boolean, default `false`, persisted) is the only switch. It is changed only by the local user over IPC `settings.set`. No peer API reads or writes it, and the sender cannot ask the receiver to open anything.
+2. **What is opened.** After a transfer's outcome is committed, the receiver opens each file that was verified (SHA-256) and written to its folder, at the name actually written (`photo(1).jpg`). At most `MAX_AUTO_OPEN_FILES` (5) files per transfer are opened; the rest are saved normally. Failed files are never opened.
+3. **How.** The core calls the OS default handler (`xdg-open` on Linux, `os.startfile` on Windows) with an argument list and no shell, without waiting for the viewer. Immediately before launching it re-checks that the file is a regular, non-symlink file with an allowed extension (`.txt .jpg .jpeg .png .pdf`), so a future change to the allowed types cannot silently start opening programs.
+4. **It can never change the transfer.** It runs after the database commit. If the viewer is missing or fails, the failure is logged and audited (`AUTO_OPEN_FAILED`) and the transfer stays `completed`.
+5. **Audit.** `AUTO_OPEN_ENABLED`, `AUTO_OPEN_DISABLED`, `AUTO_OPEN_FAILED`.
+
+**Reason:** the hand-gesture handoff should feel instant: a picture copied on laptop 1 appears on laptop 2's screen.
+
+**Accepted risk:** a viewer (image decoder, PDF reader) parses data from a trusted LAN peer. The trust model already lets a trusted peer put those files on the desktop; auto-open only removes the user's double-click. Hence opt-in, off by default, allowed types only, and a cap on windows.
+
+---
+
+# ADR-062: Hand-and-Photo Effects Replace the Bubble and Wavelets
+
+**Status:** Superseded by ADR-064 (the overlay and its effects were removed)
+
+**Amends (ADR-045):** ADR-059 decision 1's artwork only. The overlay window, its click-through rules, the `fx-play` event and its validation, the cap of 4 running effects and the reduced-motion rule are unchanged.
+
+**Decisions:**
+
+1. **New artwork.** `animation/grab_and_drop.py` (a pygame storyboard: an open hand closes over a photo to grab it, a closed hand carries it and opens to drop it) replaces the liquid-glass bubble and the burst with neon wavelets. pygame is not added: the drawing is ported to the existing TypeScript canvas, as ADR-059 did for PyQt.
+2. **Two clips, not the whole scene.** `grab` plays the part where the open hand closes into a fist, the photo shrinks and lifts off a dashed ghost of its spot, with a ripple. `drop` plays a closed hand carrying a half-size photo that opens, with the photo growing and landing and a ripple. Both play at the cursor. The storyboard's phone, tablet and captions are not used.
+3. **Same pipeline.** `effects.ts` stays pure geometry (hand, photo, ghost and ring shapes); `art.ts` draws them. The hand and photo are painted once off-screen and then scaled and faded, so a translucent hand has no seams. Durations are 1.3 s (grab) and 1.7 s (drop); the window hides 2.0 s after an effect starts.
+4. The old effect code and its tests are removed. The prototype scripts under `animation/` are not part of the build (they were deleted from the repository later; they remain in git history at commit `c3b970d`).
+
+---
+
+# ADR-063: Hand-Control Tuning From a Live Measurement
+
+**Status:** Accepted (decision 4's hold times and the pose classifier amended by ADR-064; decision 3's explanation corrected by ADR-065)
+
+**Amends (ADR-045):** ADR-057 decision 3's timings only ("held ~0.25 s each", "a 2 s cooldown"). The gestures, their meaning and every rule of ADR-056/057/058 are unchanged.
+
+**Reason:** the pointer felt laggy and grab/release was hard to trigger. A camera probe and a recorded hand session (point, palm/fist cycles, pinch clicks) found measurable causes:
+
+1. **Half frame rate.** One driver frame buffer made the camera skip every frame that arrived while the previous one was processed: 15 fps instead of 30 (30 with two buffers). The worker now asks for two buffers (`CV_CAMERA_BUFFERS`), so at most one frame is queued.
+2. **Smoothing lag.** The one-euro filter's `beta` was tuned for pixels but runs on camera-normalised coordinates, so its cutoff never rose with speed: ~100 ms behind a moving hand. With `beta = 8` it is ~13 ms behind, with the same stillness at rest.
+3. **Fists dropped by the tracker.** A fist hides the fingers and its tracking confidence dips. Tracking (not detection) confidence is now 0.3.
+4. **Palm/fist needed an unbroken streak.** One misread frame restarted the 0.25 s wait. A pose now counts once it held 70 % of the last 0.15 s (`CV_PALM_HOLD_SECONDS`, `CV_PALM_AGREE`).
+5. **The 2 s cooldown swallowed a deliberate second grab**, and that fist then opened into a release nobody meant. The cooldown is 0.8 s; the open hand of a release counts as the start of the next grab; a fist that closes and opens inside the cooldown is ignored.
+6. **A closing hand clicked.** Between an open palm and a fist the thumb lies on the curled index, which reads as a pinch. An open palm now ends pointing at once, and pointing cannot restart within 0.3 s of an open palm or fist (`CV_POINT_AFTER_PALM_SECONDS`). A fist does not end pointing at once, because a real pinch click passes through fist-like frames.
+
+**Not changed:** exposure. In dim light a camera's auto-exposure can lower its own frame rate; capping it means changing a device-wide camera setting that outlives HandOff, so it is left to the OS. Good lighting gives a faster pointer.
+
+---
+
+# ADR-064: No Gesture Overlay, Joint-Bend Poses, Deliberate Grabs, Two-Finger Scroll
+
+**Status:** Accepted (pointer units amended by ADR-065)
+
+**Amends (ADR-045):** supersedes ADR-059 and ADR-062 (the full-screen effects overlay); amends ADR-057's pose rules and ADR-063 decision 4's hold times; adds a gesture to ADR-056. The pointer, pinch, COPY gesture meaning, claim protocol (ADR-058), held-file strip (ADR-060) and every security rule are unchanged.
+
+**Reason:** after ADR-063 the pointer felt right, but grab and release fired on ordinary hand movement, and the user asked to remove the grab/release animation and to add scrolling. A recording of casual movement, deliberate grabs and a two-finger pose (raw landmarks only, no images) showed why grabs misfired.
+
+**Decisions:**
+
+1. **The effects overlay is removed.** `fx.html`, `src/fx/`, `edge/fx.rs`, its window, capability entry and build input are deleted. The worker still reports `palm_grab` / `palm_release`; the edge strip's own hand states (ADR-060) still use them.
+2. **Poses come from joint bend, not reach.** A finger's bend is the sum of its three joint angles from the landmarks' 3D positions. Open: all four < 70 degrees. Curled: > 85. The old 2D tip-to-wrist ratio read a fist seen knuckles-first (measured) as "point", so deliberate grabs were missed. With the thumb on the index, the hand is a pinch (pointing) only when the index is at least 60 degrees straighter than the other fingers; a fist curls them alike.
+3. **Deliberate grabs.** Casual closures look exactly like a fist (same bends, same thumb position, measured) but last ~0.5 s; a deliberate fist was held 0.9 s or more. An open palm must hold 0.35 s and a fist 0.8 s (70 % agreement, so ~0.56 s of fist). Grabs are a little slower, casual movement no longer fires them.
+4. **No click from a one-frame pinch.** The button is pressed only after the pinch is closed for 2 camera frames in a row: tracking jitter dipped it for single frames. The press threshold is 0.26 (closed pinches measured 0.16-0.23; it was 0.22, which split real clicks).
+5. **Two-finger scroll, opt-in.** Index and middle straight and side by side (tips closer than half a hand), ring and pinky curled, is the scroll pose. While it holds (0.1 s to start, 0.2 s to stop) the cursor stays put and the fingertips' height turns the mouse wheel, natural direction (fingers up scrolls down, like a touchpad). Curling the two fingers keeps scrolling (people flick them, measured) and is never read as a grab. Steps grow with speed (12 to 80 per frame height), so a quick stroke scrolls further than the slow return. No scrolling while the mouse button is held.
+6. **Its own switch.** Setting `hand_scroll_enabled` (boolean, default `false`, local, persisted; no schema change) is shown under hand control. The core passes `--cv-scroll` to the worker and restarts a running worker when the switch changes. Scrolling is plain OS input like the pointer: no event reaches the UI or the peer API.
+
+**Known limits:** a V sign with the fingers close together scrolls like the scroll pose; a full open-then-fist made on purpose between scroll strokes is a grab; a hand at the bottom edge of the camera frame is lost (keep the hand in the middle of the view).
+
+---
+
+# ADR-065: The Index Fingertip Steers, in Hand-Size Units
+
+**Status:** Accepted
+
+**Amends (ADR-045):** ADR-056 decision 9's pointer anchor and units (and the ADR-063/064 gains expressed in them); corrects ADR-063 decision 3's explanation. Gestures, poses, the pinch button, scrolling and every security rule are unchanged.
+
+**Reason:** the user found small movements hard and wanted the cursor to follow the index finger, not the whole hand. The cursor rode on the knuckle (index MCP and wrist), so bending the finger did nothing and fine control needed the whole arm. Reading MediaPipe's source (a local clone, reference only) also showed that its Tasks API does no landmark smoothing, that its own smoothing scales by hand size, and what its three confidence options really mean.
+
+**Decisions:**
+
+1. **The index fingertip steers.** The pointer stays relative (touchpad-style), but it now follows the fingertip, so moving only the finger moves the cursor.
+2. **Clicks stay on target.** A pinch moves the fingertip toward the thumb. Steering blends fingertip and palm movement: fingertip with the pinch open (ratio 0.7 and above), falling to the palm alone at the press threshold, and the palm alone whenever the pinch changes faster than 2.5 per second (a click in progress). A drag (pinch closed) follows the palm.
+3. **Hand-size units.** Movement is divided by the hand's size in the image (wrist to middle knuckle), as MediaPipe's smoothing does, so a hand far from the camera moves the cursor as much as a near one for the same physical motion. Gains are 0.15 to 1.1 screen widths per hand size between 0.8 and 4.5 hand sizes per second (a lower slow gain and wider slow range than before, for finer control); the filter's beta is rescaled to 1.5.
+4. **Confidence options, correctly.** In MediaPipe's hand landmarker, `min_hand_presence_confidence` is the landmark model's per-frame "a hand is still here" threshold, and `min_tracking_confidence` only sets the overlap at which a re-detected box merges with the tracked one (with one hand tracked the detector is skipped). ADR-063 attributed keeping a fist tracked to "tracking confidence"; it was the presence threshold, which it lowered at the same time. Presence stays 0.3; tracking goes back to MediaPipe's default 0.5.
+
+**Not adopted (not measured):** MediaPipe's trained gesture classifier (`gesture_recognizer.task`, which bundles the same landmarker plus Closed_Fist / Open_Palm / Pointing_Up / Victory) and bends from world landmarks. Both may classify poses better, but neither was tested on a real hand; switching without a measurement could make recognition worse. They need a live comparison before a decision.
 
 ---
 

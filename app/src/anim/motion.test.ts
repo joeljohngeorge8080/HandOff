@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { basename, extensionOf, kindOf, shownChips } from "./fileGlyph";
+import { basename, extensionOf, heldChips, kindOf, shownChips, stackOffsets } from "./fileGlyph";
 import { MAX_CHIPS, emergeFrames, inhaleFrames, openFrames, settleFrames, shakeFrames, squeezeFrames, stagger } from "./motion";
 
 describe("keyframes", () => {
@@ -70,5 +70,20 @@ describe("file glyphs", () => {
     expect(r.shown).toHaveLength(MAX_CHIPS);
     expect(r.extra).toBe(10 - MAX_CHIPS);
     expect(shownChips([])).toEqual({ shown: [], extra: 0 });
+  });
+});
+
+describe("held chips", () => {
+  it("shows at most MAX_CHIPS names and counts the rest from the real total", () => {
+    expect(heldChips(["a.png", "b.png"], 2)).toEqual({ shown: ["a.png", "b.png"], extra: 0 });
+    expect(heldChips(["a", "b", "c", "d", "e"], 5)).toEqual({ shown: ["a", "b", "c"], extra: 2 });
+    expect(heldChips(["a"], 40)).toEqual({ shown: ["a"], extra: 39 });
+    expect(heldChips([], 0)).toEqual({ shown: [], extra: 0 });
+  });
+  it("stacks chips evenly around the centre", () => {
+    expect(stackOffsets(1, 40)).toEqual([0]);
+    expect(stackOffsets(2, 40)).toEqual([-20, 20]);
+    expect(stackOffsets(3, 40)).toEqual([-40, 0, 40]);
+    expect(stackOffsets(0, 40)).toEqual([]);
   });
 });

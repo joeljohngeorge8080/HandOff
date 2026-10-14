@@ -6,7 +6,10 @@ from handoff import config
 from handoff.cv.relative import RelativePointer
 
 SCREEN = (1920, 1080)
-CAM = (640, 480)
+# The builder feeds hand sizes on both axes (ADR-065). Movements below are written in
+# camera-widths, as a person thinks of them, and sweep() converts them with U.
+CAM = (1, 1)
+U = 1 / config.CV_HAND_WIDTHS  # hand sizes per camera-width
 
 
 def make(start=(960.0, 540.0)):
@@ -16,7 +19,9 @@ def make(start=(960.0, 540.0)):
 
 
 def sweep(rp, t0, x0, y0, dx_total, dy_total, seconds, fps=60):
-    """Move the anchor in a straight line at constant speed; return the last result."""
+    """Move the anchor in a straight line at constant speed; return the last result. The
+    movement is given in camera-widths and fed in hand sizes."""
+    dx_total, dy_total = dx_total * U, dy_total * U
     n = max(1, round(seconds * fps))
     out = None
     for i in range(1, n + 1):
@@ -62,12 +67,12 @@ def test_gain_is_capped_at_the_slow_and_fast_ends():
     start(rp)
     # well below the slow speed: exactly the slow gain
     x, _, _ = sweep(rp, 0.0, 0.5, 0.5, 0.01, 0, 4.0)
-    assert x - 960 == pytest.approx(0.01 * config.CV_GAIN_SLOW * SCREEN[0], rel=0.05)
+    assert x - 960 == pytest.approx(0.01 * U * config.CV_GAIN_SLOW * SCREEN[0], rel=0.05)
     # far above the fast speed: never more than the fast gain
     rp2, _ = make()
     start(rp2)
     x2, _, _ = sweep(rp2, 0.0, 0.5, 0.5, 0.05, 0, 0.005, fps=1000)
-    assert x2 - 960 <= 0.05 * config.CV_GAIN_FAST * SCREEN[0] + 1e-6
+    assert x2 - 960 <= 0.05 * U * config.CV_GAIN_FAST * SCREEN[0] + 1e-6
 
 
 def test_the_same_physical_distance_moves_x_and_y_by_the_same_number_of_pixels():
@@ -75,9 +80,8 @@ def test_the_same_physical_distance_moves_x_and_y_by_the_same_number_of_pixels()
     b, _ = make()
     start(a)
     start(b)
-    cam_w, cam_h = CAM
     ax, _, _ = sweep(a, 0.0, 0.5, 0.5, 0.02, 0, 0.1)
-    _, by, _ = sweep(b, 0.0, 0.5, 0.5, 0, 0.02 * cam_w / cam_h, 0.1)  # same camera px
+    _, by, _ = sweep(b, 0.0, 0.5, 0.5, 0, 0.02, 0.1)  # same distance: hand sizes are square
     assert (ax - 960) == pytest.approx(by - 540, rel=0.02)
 
 

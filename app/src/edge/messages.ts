@@ -31,6 +31,7 @@ export const MESSAGES = {
   complete: "Transfer complete",
   grabbed: "Grabbed",
   released: "Released",
+  holding: (count: number): string => `Holding ${count} ${count === 1 ? "file" : "files"}`,
   failed: "Transfer failed",
   partial: "Some files failed",
 } as const;

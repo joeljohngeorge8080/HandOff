@@ -58,6 +58,9 @@ class FakePointer:
     def copy(self):
         self.calls.append(("copy",))
 
+    def scroll(self, steps):
+        self.calls.append(("scroll", steps))
+
 
 def lines(buf: io.StringIO) -> list[dict]:
     return [json.loads(x) for x in buf.getvalue().splitlines()]
@@ -178,6 +181,7 @@ def test_cancel_presses_escape_before_releasing_and_shutdown_never_leaves_a_butt
 def test_shutdown_releases_a_held_button():
     p = FakePointer()
     c = worker.Controller(p, worker.Emitter(io.StringIO()))
+    c.tick(-0.033, sample(-0.033, 0.1))  # closed for two camera frames: pressed
     c.tick(0.0, sample(0.0, 0.1))
     c.shutdown()
     assert p.calls[-1] == ("up",)
@@ -188,6 +192,7 @@ def test_shutdown_releases_a_held_button():
 def test_gestures_are_reported_with_canonical_names():
     buf = io.StringIO()
     c = worker.Controller(FakePointer(), worker.Emitter(buf))
+    c.tick(-0.033, sample(-0.033, 0.1))  # closed for two camera frames: pressed
     c.tick(0.0, sample(0.0, 0.1))
     ev = [x for x in lines(buf) if x["event"] == "gesture_detected"]
     assert ev == [{"event": "gesture_detected", "gesture": "pinch_closed", "confidence": 1.0}]
@@ -243,6 +248,7 @@ def test_a_pointing_hand_never_copies_or_sends():
 
 def test_a_fist_while_the_mouse_button_is_down_never_presses_ctrl_c():
     c, p, buf, _ = palm_controller()
+    c.tick(-0.033, sample(-0.033, 0.1))  # closed for two camera frames: pressed
     c.tick(0.0, sample(0.0, 0.1))  # pinch held: a drag in progress
     t = hold(c, "open", 0.02, 0.5, pinch=0.1)
     hold(c, "fist", t, 0.6, pinch=0.1)
@@ -340,3 +346,69 @@ def test_pyautogui_loader_blocks_mouseinfo_and_survives_a_sys_exit_on_import(mon
         pointer_mod.load_pyautogui()
     assert e.value.code == "CV_UNAVAILABLE"
     assert sys.modules["mouseinfo"] is None  # MouseInfo can no longer exit the process
+
+
+# ----- two-finger scroll (ADR-064) ------------------------------------------------------------
+
+
+def scrolling(t, y, reacquired=False, pinch=0.8):
+    return HandSample(
+        t=t, x=10.0, y=10.0, pinch=pinch, pose="scroll", active=False, scroll_y=y,
+        reacquired=reacquired,
+    )  # fmt: skip
+
+
+def wheel(p):
+    return sum(c[1] for c in p.calls if c[0] == "scroll")
+
+
+def stroke(c, dy, seconds, t0=0.0, frames=10, pinch=0.8):
+    """Fingertips move by `dy` (frame heights) over `seconds`, at 125 Hz control ticks."""
+    c.tick(t0, scrolling(t0, 0.5, reacquired=True, pinch=pinch))
+    for i in range(1, frames + 1):
+        t = t0 + seconds * i / frames
+        s = scrolling(t, 0.5 + dy * i / frames, pinch=pinch)
+        for k in range(3):  # several control ticks per camera frame
+            c.tick(t + k * 0.008, s)
+
+
+def test_fingers_moving_up_scroll_down_like_a_touchpad():
+    p = FakePointer()
+    stroke(worker.Controller(p, worker.Emitter(io.StringIO())), dy=-0.2, seconds=0.3)
+    assert wheel(p) < 0  # negative wheel steps scroll down
+
+
+def test_each_camera_frame_scrolls_once_however_often_the_loop_ticks():
+    once, many = FakePointer(), FakePointer()
+    c1 = worker.Controller(once, worker.Emitter(io.StringIO()))
+    c1.tick(0.0, scrolling(0.0, 0.5, reacquired=True))
+    c1.tick(0.033, scrolling(0.033, 0.4))
+    c2 = worker.Controller(many, worker.Emitter(io.StringIO()))
+    c2.tick(0.0, scrolling(0.0, 0.5, reacquired=True))
+    for k in range(10):
+        c2.tick(0.033 + k * 0.008, scrolling(0.033, 0.4))
+    assert wheel(once) == wheel(many) != 0
+
+
+def test_a_quick_flick_scrolls_further_than_a_slow_return():
+    fast, slow = FakePointer(), FakePointer()
+    stroke(worker.Controller(fast, worker.Emitter(io.StringIO())), dy=0.2, seconds=0.12)
+    stroke(worker.Controller(slow, worker.Emitter(io.StringIO())), dy=-0.2, seconds=1.5)
+    assert abs(wheel(fast)) > 2 * abs(wheel(slow))
+
+
+def test_starting_or_coming_back_does_not_scroll_the_jump():
+    p = FakePointer()
+    c = worker.Controller(p, worker.Emitter(io.StringIO()))
+    c.tick(0.0, scrolling(0.0, 0.2, reacquired=True))
+    c.tick(0.033, scrolling(0.033, 0.9, reacquired=True))
+    assert wheel(p) == 0
+
+
+def test_no_scrolling_while_the_mouse_button_is_held():
+    p = FakePointer()
+    c = worker.Controller(p, worker.Emitter(io.StringIO()))
+    c.tick(-0.033, sample(-0.033, 0.1))  # closed for two camera frames: pressed
+    c.tick(0.0, sample(0.0, 0.1))  # pinch: button down
+    stroke(c, dy=0.3, seconds=0.2, t0=0.01, pinch=0.1)  # the pinch stays closed
+    assert c.machine.pressed and wheel(p) == 0

@@ -49,6 +49,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=PEER_PORT, help="peer API port (0 = any free)")
     parser.add_argument("--bind", default=None, help="address to bind (default: the LAN address)")
     parser.add_argument("--cv-worker", metavar="MODEL", help="hand-control worker (internal)")
+    parser.add_argument("--cv-scroll", action="store_true", help="worker: two-finger scroll")
     parser.add_argument("--no-network", action="store_true", help="local only (testing)")
     parser.add_argument("--no-discovery", action="store_true", help="disable mDNS (testing)")
     return parser.parse_args(argv)
@@ -59,7 +60,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cv_worker:  # child process of the core (ADR-056): no database, no network
         from handoff.cv.worker import main as worker_main
 
-        return worker_main([args.cv_worker])
+        return worker_main([args.cv_worker], scroll=args.cv_scroll)
     logging.basicConfig(
         stream=sys.stderr,
         level=logging.INFO,
