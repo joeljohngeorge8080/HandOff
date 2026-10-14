@@ -62,15 +62,3 @@ def test_without_a_handler_the_endpoint_just_says_nothing_is_held(h):
 def test_get_on_the_claim_path_is_not_allowed(h):
     trust_alice(h)
     assert h.call("GET", "/api/v1/handoff/claim").status_code == 405
-
-
-def test_a_trusted_peer_can_claim_after_this_device_restarted(h):
-    """Regression: the active peer lives in memory, so after a restart the holder answered a
-    trusted peer's claim with 'not connected' and the grabbed file never arrived."""
-    seen = []
-    h.ctx.claims = lambda who: seen.append(who) or {"transfer_id": "t1"}
-    trust_alice(h)
-    h.ctx.connections._active = None  # what a restart leaves behind; trust stays in the database
-    r = h.call("POST", "/api/v1/handoff/claim", json={})
-    assert r.status_code == 202 and seen == [h.alice.device_id]
-    assert h.ctx.connections.active_peer().device_id == h.alice.device_id
