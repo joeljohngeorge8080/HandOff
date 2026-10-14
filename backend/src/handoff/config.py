@@ -143,6 +143,10 @@ CV_POINT_AFTER_PALM_SECONDS = 0.30
 CV_PALM_OPEN_HOLD_SECONDS = 0.35
 CV_PALM_FIST_HOLD_SECONDS = 0.8  # x CV_PALM_AGREE = ~0.56 s of fist: above a casual ~0.5 s
 CV_PALM_AGREE = 0.7
+# A fist that is only the lead-in to a release (carried to the other laptop, then opened) needs
+# far less: the peer still checks that the grab is fresh. The 0.8 s hold never fired for a hand
+# that arrives and opens within about half a second.
+CV_PALM_CARRY_FIST_SECONDS = 0.4  # x CV_PALM_AGREE = ~0.28 s of fist
 CV_GRAB_WINDOW_SECONDS = 1.5  # the fist must follow the open palm within this
 CV_HOLD_MAX_SECONDS = 20.0  # a grab that is never released expires
 # After a release, no new grab until this has passed. 2.0 s swallowed a deliberate second grab

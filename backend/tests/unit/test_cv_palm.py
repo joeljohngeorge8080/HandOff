@@ -152,3 +152,36 @@ def test_a_hand_that_closes_in_passing_is_not_a_grab():
     # is held 0.9 s or more
     out, _ = run(PalmMachine(), [(POSE_OPEN, 1.0), (POSE_FIST, 0.5), (POSE_OTHER, 1.0)])
     assert out == []
+
+
+def test_short_carried_fist_then_open_releases() -> None:
+    """Regression: the receiving laptop saw the fist for under the grab hold and never claimed."""
+    m = PalmMachine()
+    events: list[str] = []
+    t = 0.0
+    for _ in range(30):
+        events += m.step(t, None)
+        t += 1 / 30
+    for _ in range(12):  # 0.4 s of fist: too short to start a grab, enough for a release
+        events += m.step(t, POSE_FIST)
+        t += 1 / 30
+    for _ in range(30):
+        events += m.step(t, POSE_OPEN)
+        t += 1 / 30
+    assert events == [RELEASE]
+
+
+def test_brief_fist_flicker_does_not_release() -> None:
+    m = PalmMachine()
+    events: list[str] = []
+    t = 0.0
+    for _ in range(30):
+        events += m.step(t, POSE_OPEN)
+        t += 1 / 30
+    for _ in range(3):  # 0.1 s
+        events += m.step(t, POSE_FIST)
+        t += 1 / 30
+    for _ in range(30):
+        events += m.step(t, POSE_OPEN)
+        t += 1 / 30
+    assert events == []
