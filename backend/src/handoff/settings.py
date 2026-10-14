@@ -14,7 +14,9 @@ from handoff.destination import default_receive_dir, validate_receive_dir
 from handoff.errors import HandOffError
 
 # Keys the UI may change. device_name is derived (DATABASE §12); schema_version is internal.
-USER_EDITABLE = frozenset({"history_retention", "receive_directory", "hand_control_enabled"})
+USER_EDITABLE = frozenset(
+    {"history_retention", "receive_directory", "hand_control_enabled", "auto_open_received"}
+)
 # `receive_mode` is obsolete since ADR-055: old databases keep the row, nothing reads it.
 _HIDDEN = frozenset({"schema_version", "receive_mode"})
 
@@ -40,6 +42,8 @@ class SettingsService:
                 repo.set("history_retention", DEFAULT_HISTORY_RETENTION_DAYS)
             if repo.get("hand_control_enabled") is None:
                 repo.set("hand_control_enabled", False)  # opt-in camera (ADR-056)
+            if repo.get("auto_open_received") is None:
+                repo.set("auto_open_received", False)  # opt-in (ADR-061)
             if repo.get("device_name") is None:
                 repo.set("device_name", derive_device_name(hostname))
 
@@ -89,6 +93,9 @@ class SettingsService:
         if key == "hand_control_enabled":
             self.set_hand_control(value)
             return
+        if key == "auto_open_received":
+            self.set_auto_open(value)
+            return
         if key == "history_retention" and (
             isinstance(value, bool) or not isinstance(value, int) or value < 0
         ):
@@ -112,5 +119,24 @@ class SettingsService:
                     s,
                     AuditEvent.HAND_CONTROL_ENABLED if value else AuditEvent.HAND_CONTROL_DISABLED,
                     "Hand control turned on." if value else "Hand control turned off.",
+                )
+        return value
+
+    def auto_open_received(self) -> bool:
+        return self.get("auto_open_received") is True
+
+    def set_auto_open(self, value: object) -> bool:
+        if not isinstance(value, bool):
+            raise HandOffError("INVALID_REQUEST", "auto_open_received must be true or false.")
+        with self.db.session() as s:
+            repo = SettingsRepository(s)
+            if repo.get("auto_open_received") is not value:
+                repo.set("auto_open_received", value)
+                record_event(
+                    s,
+                    AuditEvent.AUTO_OPEN_ENABLED if value else AuditEvent.AUTO_OPEN_DISABLED,
+                    "Opening received files turned on."
+                    if value
+                    else "Opening received files turned off.",
                 )
         return value

@@ -5,7 +5,12 @@ import threading
 import pytest
 
 from handoff import config
-from handoff.cv.clipboard import parse_gnome_copied, parse_uri_list
+from handoff.cv.clipboard import (
+    decode_selection_bytes,
+    is_png,
+    parse_gnome_copied,
+    parse_uri_list,
+)
 from handoff.cv.copy_bridge import CopyBridge
 from handoff.errors import HandOffError
 from handoff.events import EventBus
@@ -58,6 +63,10 @@ class Clock:
 
 
 PEER = "11111111-1111-4111-8111-111111111111"
+
+
+def config_max():
+    return config.MAX_FILE_SIZE
 
 
 def make(files=("/data/a.png",), send_error=None, read_error=None, claim_error=None, active=PEER):
@@ -259,3 +268,204 @@ def test_tk_hex_byte_dump_of_a_uri_list_is_decoded_regression():
     assert decode_selection("plain text") == "plain text"
     assert decode_selection("0xzz 0x1") == "0xzz 0x1"
     assert decode_selection("0xff 0xfe") == ""  # not UTF-8: nothing usable
+
+
+# ----- clipboard images (a picture copied from a browser) --------------------------------
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+
+
+def test_png_is_recognised_by_its_signature_only():
+    assert is_png(PNG)
+    for bad in (
+        b"",
+        b"\x89PNG",
+        b"GIF89a....",
+        b"MZ" + b"\x00" * 40,
+        b"\xff\xd8\xff\xe0" + b"\x00" * 20,
+    ):
+        assert not is_png(bad)
+
+
+def test_tk_hex_dump_decodes_to_the_raw_bytes_regression():
+    dump = " ".join(f"0x{b:x}" for b in PNG)
+    assert decode_selection_bytes(dump) == PNG
+    assert decode_selection_bytes("not hex") is None
+    assert decode_selection_bytes("0x1 0xzz") is None
+    assert decode_selection_bytes("") is None
+
+
+# ----- what is held, shown, stashed and cleaned up ---------------------------------------
+
+
+class Sched:
+    """A scheduler that never fires by itself; tests call fire()."""
+
+    def __init__(self) -> None:
+        self.jobs: list[list] = []
+
+    def __call__(self, delay, fn):
+        job = [delay, fn, False]
+        self.jobs.append(job)
+
+        def cancel():
+            job[2] = True
+
+        return cancel
+
+    def fire(self):
+        for _delay, fn, cancelled in list(self.jobs):
+            if not cancelled:
+                fn()
+
+
+def make_held(files=("/data/a.png",), image=None):
+    bus, seen, sent, stashed, discarded, sched = EventBus(), [], [], [], [], Sched()
+    bus.subscribe(lambda n, d: seen.append((n, d)))
+    clock = Clock()
+
+    def stash(data):
+        path = f"/data/held/image-{len(stashed) + 1}.png"
+        stashed.append((path, data))
+        return path
+
+    b = CopyBridge(
+        bus,
+        lambda paths: sent.append(paths) or {"transfer": {"transfer_id": "t1"}},
+        lambda: None,
+        lambda: PEER,
+        lambda: list(files),
+        clock,
+        read_image=lambda: image,
+        stash=stash,
+        discard=lambda p: discarded.append(p),
+        schedule=sched,
+    )
+    return b, seen, sent, stashed, discarded, sched
+
+
+def held_events(seen):
+    return [d for n, d in seen if n == "hand.held"]
+
+
+def test_a_grab_tells_the_ui_what_is_held_by_name_and_count():
+    b, seen, *_ = make_held(files=("/home/u/Pictures/cat.png", "C:\\Users\\u\\notes.txt"))
+    b.on_grab()
+    assert held_events(seen) == [{"names": ["cat.png", "notes.txt"], "count": 2}]
+
+
+def test_names_are_sanitised_and_bounded_before_they_reach_the_ui():
+    nasty = "/x/" + "a" * 500 + ".png"
+    many = [f"/x/f{i}.png" for i in range(60)]
+    b, seen, *_ = make_held(files=[nasty, "/x/line\nbreak\x00.png", *many])
+    b.on_grab()
+    (event,) = held_events(seen)
+    assert event["count"] == 62
+    assert len(event["names"]) <= 20
+    assert all(len(n) <= 120 and "\n" not in n and "\x00" not in n for n in event["names"])
+
+
+def test_cancelling_sending_or_replacing_a_grab_clears_what_the_ui_shows():
+    b, seen, *_ = make_held()
+    b.on_grab()
+    b.on_release()  # cancel
+    assert held_events(seen)[-1] == {"names": [], "count": 0}
+
+    b, seen, *_ = make_held()
+    b.on_grab()
+    b.serve_claim(PEER)  # sent
+    assert held_events(seen)[-1] == {"names": [], "count": 0}
+
+
+def test_nothing_to_clear_means_no_clearing_event():
+    b, seen, *_ = make_held(files=())
+    b.on_grab()  # empty clipboard, nothing was held before
+    assert held_events(seen) == []
+
+
+def test_an_empty_grab_after_a_held_one_clears_the_display():
+    files = [["/data/a.png"], []]
+    b, seen, *_ = make_held()
+    b._read = lambda: files.pop(0)
+    b.on_grab()
+    b.on_grab()
+    assert held_events(seen)[-1] == {"names": [], "count": 0}
+
+
+def test_an_unclaimed_grab_expires_and_the_display_clears():
+    b, seen, sent, _, _, sched = make_held()
+    b.on_grab()
+    assert sched.jobs[-1][0] == config.CV_HOLD_MAX_SECONDS
+    sched.fire()
+    assert held_events(seen)[-1] == {"names": [], "count": 0}
+    with pytest.raises(HandOffError):
+        b.serve_claim(PEER)
+
+
+def test_an_old_expiry_cannot_clear_a_newer_grab():
+    b, seen, sent, _, _, sched = make_held()
+    b.on_grab()
+    stale = sched.jobs[0][1]
+    b.on_grab()  # replaces it
+    stale()  # the first grab's timer fires late anyway
+    assert held_events(seen)[-1] == {"names": ["a.png"], "count": 1}  # still shown
+    assert b.serve_claim(PEER) == {"transfer_id": "t1"}  # still claimable
+
+
+def test_a_picture_on_the_clipboard_becomes_a_held_png_when_there_are_no_files():
+    b, seen, sent, stashed, discarded, _ = make_held(files=(), image=PNG)
+    b.on_grab()
+    assert stashed == [("/data/held/image-1.png", PNG)]
+    assert gestures(seen) == ["copied"]
+    assert held_events(seen) == [{"names": ["image-1.png"], "count": 1}]
+    b.serve_claim(PEER)
+    assert sent == [["/data/held/image-1.png"]]
+    assert discarded == ["/data/held/image-1.png"]  # the temporary copy is removed after the send
+
+
+def test_files_win_over_a_picture_and_real_files_are_never_deleted():
+    b, _, sent, stashed, discarded, _ = make_held(files=("/data/a.png",), image=PNG)
+    b.on_grab()
+    b.serve_claim(PEER)
+    assert stashed == [] and sent == [["/data/a.png"]] and discarded == []
+
+
+def test_something_that_is_not_a_png_is_treated_as_nothing_copied():
+    b, seen, _, stashed, _, _ = make_held(files=(), image=b"MZ" + b"\x00" * 64)
+    b.on_grab()
+    assert stashed == [] and gestures(seen) == ["copy_empty"]
+
+
+def test_an_oversized_picture_is_refused_before_it_is_written():
+    big = PNG + b"\x00" * (config_max() + 1)
+    b, seen, _, stashed, _, _ = make_held(files=(), image=big)
+    b.on_grab()
+    assert stashed == [] and gestures(seen) == ["copy_failed"]
+
+
+def test_padding_after_the_png_end_is_trimmed_before_it_is_stored():
+    padded = PNG + b"IEND\xaeB`\x82" + b"\x00" * 100
+    b, _, _, stashed, _, _ = make_held(files=(), image=padded)
+    b.on_grab()
+    assert stashed[0][1].endswith(b"IEND\xaeB`\x82")
+
+
+def test_the_temporary_picture_is_removed_when_the_grab_is_cancelled_replaced_or_expires():
+    b, _, _, _, discarded, sched = make_held(files=(), image=PNG)
+    b.on_grab()
+    b.on_release()
+    assert discarded == ["/data/held/image-1.png"]
+    b.on_grab()
+    b.on_grab()  # replaced: the first copy goes
+    assert discarded[-1] == "/data/held/image-2.png"
+    sched.fire()
+    assert discarded[-1] == "/data/held/image-3.png"
+
+
+def test_the_temporary_picture_is_removed_even_when_the_send_is_refused():
+    b, _, _, _, discarded, _ = make_held(files=(), image=PNG)
+    b._send = lambda p: (_ for _ in ()).throw(HandOffError("FILE_TYPE_NOT_SUPPORTED", "x"))
+    b.on_grab()
+    with pytest.raises(HandOffError):
+        b.serve_claim(PEER)
+    assert discarded == ["/data/held/image-1.png"]

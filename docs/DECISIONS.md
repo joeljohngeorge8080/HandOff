@@ -1283,6 +1283,58 @@ The user asked for a gesture that copies a selected file and sends it. A pure-CV
 
 ---
 
+# ADR-059: Full-Screen Gesture Effects Overlay
+
+**Status:** Accepted
+
+**Why:** The palm grab and release deserve a visible reaction where the user is working, not only on the thin edge strip. The two effects (a liquid-glass bubble that implodes on grab, a burst plus five neon wavelets on release) were prototyped in a standalone PyQt6 script; PyQt6 would be a second GUI toolkit and a new dependency, so they are ported into the existing Tauri/TypeScript UI instead.
+
+**Decisions:**
+
+1. **A second Tauri window, label `fx`**: transparent, borderless, always on top, click-through (`set_ignore_cursor_events`), unfocusable, no drag-and-drop handler. It loads `fx.html` (a second Vite page) and draws on a canvas. It is created hidden and parked off-screen at startup.
+2. **It exists on screen only while an effect plays.** When the core pushes `gesture_detected` with `palm_grab` or `palm_release`, the Rust side makes the window click-through, covers the screen the cursor is on, shows it, tells the page where (the cursor, in CSS pixels) and what (`grab` / `drop`), then hides it about 1.6 s later. It never takes input, so it cannot swallow a click or an OS drop.
+3. **Feedback only.** The overlay listens for one local event (`fx-play`), validates it, and draws. It calls no core or peer API and starts no transfer. The edge strip's own grab/release views (ADR-057) are unchanged.
+4. **Time-based and bounded.** Effects advance by wall-clock time (a slow frame skips ahead), at most 4 run at once, nothing animates while none is playing, and `prefers-reduced-motion` disables them.
+5. **Limits.** Transparency needs a compositor on Linux (as the edge window already does). The effect is placed at the cursor, which stays where the user last pointed while the palm gestures are made. Windows is untested by the author.
+
+---
+
+# ADR-060: Show What Is Held, and Hold a Picture Copied in a Browser
+
+**Status:** Accepted
+
+**Amends (ADR-045):** ADR-057 (what a grab can hold), API §42 (a new local push event).
+
+**Decisions:**
+
+1. **The strip shows what the hand is holding.** While a grab is held the edge strip stays up with a chip per file (name, type badge, `+N` for the rest) and the label "Holding N files". The core pushes `hand.held` `{names, count}` when a grab starts, replaces it on a new grab, and pushes `{names: [], count: 0}` when the grab ends (cancelled, sent, expired). The UI follows the core; it has no timer of its own for this. The event carries bare file names (cleaned, at most 20 of at most 120 characters, plus the real count), never paths.
+2. **A picture copied in a browser can be held.** A browser's "Copy image" puts a picture on the clipboard, not a file. If a grab finds no files but finds a picture, the core saves it as a PNG in its own scratch directory (`temp/held/`, generated name `image-YYYYMMDD-HHMMSS.png`, exclusive create, user-only permissions) and holds that file. Linux reads the `image/png` clipboard format (tkinter); Windows reads the registered `PNG` format. Anything that is not a real PNG (signature check, trimmed at `IEND`) or is over 50 MB is refused (`copy_empty` / `copy_failed`). Files on the clipboard always win over a picture.
+3. **The picture then travels exactly like any other file**: `drop.send` validates it (type, size, executable header) and imports a managed copy, so nothing about the transfer path changes. The scratch copy is deleted when the grab is cancelled, replaced, expires or has been handed to the send.
+4. **The grab itself is unchanged**: it still only presses Ctrl+C. The user must have the image selected so the browser copies it (for example Ctrl+A on an image-only tab, or "Copy image" once). Right-click automation and Ctrl+A fallbacks were considered and rejected: they inject input into whatever window has focus.
+5. **Limits.** Windows pictures arrive only if the browser publishes the `PNG` clipboard format (Chrome, Edge and Firefox do); a bitmap-only (`CF_DIB`) clipboard is not converted. A very large clipboard picture is read into memory before it is refused.
+
+---
+
+# ADR-061: Open Received Files Automatically (Opt-In)
+
+**Status:** Accepted
+
+**Amends (ADR-045):** the "never execute received files" rule (CLAUDE.md, SECURITY) is clarified, not relaxed: opening hands a file to the user's own viewer and never runs it. ADR-055 (receiver's folder) gains one optional step after a transfer completes.
+
+**Decisions:**
+
+1. **A local, opt-in switch.** Setting `auto_open_received` (boolean, default `false`, persisted) is the only switch. It is changed only by the local user over IPC `settings.set`. No peer API reads or writes it, and the sender cannot ask the receiver to open anything.
+2. **What is opened.** After a transfer's outcome is committed, the receiver opens each file that was verified (SHA-256) and written to its folder, at the name actually written (`photo(1).jpg`). At most `MAX_AUTO_OPEN_FILES` (5) files per transfer are opened; the rest are saved normally. Failed files are never opened.
+3. **How.** The core calls the OS default handler (`xdg-open` on Linux, `os.startfile` on Windows) with an argument list and no shell, without waiting for the viewer. Immediately before launching it re-checks that the file is a regular, non-symlink file with an allowed extension (`.txt .jpg .jpeg .png .pdf`), so a future change to the allowed types cannot silently start opening programs.
+4. **It can never change the transfer.** It runs after the database commit. If the viewer is missing or fails, the failure is logged and audited (`AUTO_OPEN_FAILED`) and the transfer stays `completed`.
+5. **Audit.** `AUTO_OPEN_ENABLED`, `AUTO_OPEN_DISABLED`, `AUTO_OPEN_FAILED`.
+
+**Reason:** the hand-gesture handoff should feel instant: a picture copied on laptop 1 appears on laptop 2's screen.
+
+**Accepted risk:** a viewer (image decoder, PDF reader) parses data from a trusted LAN peer. The trust model already lets a trusted peer put those files on the desktop; auto-open only removes the user's double-click. Hence opt-in, off by default, allowed types only, and a cap on windows.
+
+---
+
 # Documentation Authority
 
 When documentation conflicts, use this priority:

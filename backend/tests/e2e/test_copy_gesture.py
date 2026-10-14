@@ -18,6 +18,19 @@ def on_clipboard(monkeypatch):
     def put(paths):
         monkeypatch.setattr(clipboard, "_read_x11", lambda: list(paths))
         monkeypatch.setattr(clipboard, "_read_windows", lambda: list(paths))
+        monkeypatch.setattr(clipboard, "_read_x11_image", lambda: None)
+        monkeypatch.setattr(clipboard, "_read_windows_image", lambda: None)
+
+    return put
+
+
+@pytest.fixture
+def picture_on_clipboard(monkeypatch):
+    def put(png):
+        monkeypatch.setattr(clipboard, "_read_x11", lambda: [])
+        monkeypatch.setattr(clipboard, "_read_windows", lambda: [])
+        monkeypatch.setattr(clipboard, "_read_x11_image", lambda: png)
+        monkeypatch.setattr(clipboard, "_read_windows_image", lambda: png)
 
     return put
 
@@ -124,3 +137,38 @@ def test_an_executable_renamed_to_an_allowed_extension_is_refused(pair, tmp_path
     b.core.hand_control.on_release()
     assert a_seen == ["copied", "send_failed"] and b_seen == ["claim_failed"]
     assert b.received_files() == {}
+
+
+def test_a_picture_copied_in_a_browser_is_held_as_a_png_and_arrives_on_the_other_laptop(
+    pair, picture_on_clipboard
+):
+    a, b = pair
+    connect_pair(a, b)
+    png = b"\x89PNG\r\n\x1a\n" + os.urandom(20_000) + b"IEND\xaeB`\x82"
+    picture_on_clipboard(png)
+    held = []
+    a.core.events.subscribe(lambda n, d: held.append(d) if n == "hand.held" else None)
+    a_seen = gestures(a)
+
+    a.core.hand_control.on_grab()
+    assert a_seen == ["copied"]
+    assert len(held[-1]["names"]) == 1 and held[-1]["names"][0].startswith("image-")
+    assert held[-1]["names"][0].endswith(".png") and held[-1]["count"] == 1
+    assert "/" not in held[-1]["names"][0]  # a name, never a path
+
+    b.core.hand_control.on_release()
+    wait_for(lambda: list(b.received_files().values()) == [png], what="the picture to arrive")
+    assert held[-1] == {"names": [], "count": 0}
+    held_dir = a.paths.temp_dir / "held"
+    wait_for(lambda: not held_dir.exists() or not list(held_dir.iterdir()), what="temp cleanup")
+
+
+def test_something_that_is_not_a_png_on_the_clipboard_is_never_held(pair, picture_on_clipboard):
+    a, b = pair
+    connect_pair(a, b)
+    picture_on_clipboard(b"MZ" + os.urandom(200))
+    a_seen = gestures(a)
+    a.core.hand_control.on_grab()
+    assert a_seen == ["copy_empty"]
+    held_dir = a.paths.temp_dir / "held"
+    assert not held_dir.exists() or not list(held_dir.iterdir())

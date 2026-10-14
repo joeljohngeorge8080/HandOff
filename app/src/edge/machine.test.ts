@@ -436,3 +436,54 @@ describe("hand grab and release animations", () => {
     expect(labelFor({ kind: "hand_release", token: 1 }, null)).toBe("Released");
   });
 });
+
+describe("what the hand is holding", () => {
+  const held = (names: string[], count = names.length): Input => ({ type: "held", names, count });
+  const cv = (gesture: string): Input => ({ source: "cv", type: "gesture_detected", gesture, confidence: 1 });
+
+  it("shows the held files on the strip and wakes it", () => {
+    const { model, effects } = run(withPeer(), held(["cat.png", "notes.txt"]));
+    expect(model.view).toEqual({ kind: "holding", names: ["cat.png", "notes.txt"], count: 2 });
+    expect(effects).toContainEqual({ type: "window", mode: "stage" });
+  });
+  it("stays on screen until the grab ends, then returns to idle and shrinks the window", () => {
+    const a = run(withPeer(), held(["a.png"]));
+    expect(a.effects.some((e) => e.type === "schedule")).toBe(false); // no timer: the core says when
+    const b = run(a.model, held([], 0));
+    expect(kind(b.model)).toBe("idle");
+    expect(b.effects).toContainEqual({ type: "window", mode: "idle" });
+  });
+  it("a new grab replaces what is shown", () => {
+    const { model } = run(withPeer(), held(["a.png"]), held(["b.png", "c.png"]));
+    expect(model.view).toEqual({ kind: "holding", names: ["b.png", "c.png"], count: 2 });
+  });
+  it("clearing when nothing is shown does nothing", () => {
+    const s = reduce(withPeer(), held([], 0));
+    expect(kind(s.model)).toBe("idle");
+    expect(s.effects).toEqual([]);
+  });
+  it("takes over from the grab animation but never interrupts a transfer, a drag or the panel", () => {
+    expect(kind(run(withPeer(), cv("palm_grab"), held(["a.png"])).model)).toBe("holding");
+    for (const start of [run(withPeer(), drop(1)).model, run(withPeer(), drag()).model, run(withPeer(), { type: "open_panel" }).model]) {
+      expect(reduce(start, held(["a.png"])).model.view).toEqual(start.view);
+    }
+  });
+  it("the pointer leaving the edge does not end it", () => {
+    const { model } = run(withPeer(), held(["a.png"]), { type: "proximity", phase: "far" });
+    expect(kind(model)).toBe("holding");
+  });
+  it("sending takes over from it (the claim starts a transfer)", () => {
+    const { model } = run(withPeer(), held(["a.png"]), held([], 0), { type: "transfer", transfer: tr({ status: "created" }) });
+    expect(kind(model)).toBe("sending");
+  });
+  it("a grab that was held while a transfer finished comes back after the result", () => {
+    const a = run(withPeer(), drop(1), held(["a.png"]), { type: "transfer", transfer: tr({ status: "completed" }) });
+    const sched = of(a.effects, "schedule").at(-1) as Extract<Effect, { type: "schedule" }>;
+    expect(kind(a.model)).toBe("send_success");
+    expect(kind(run(a.model, { type: "timer", token: sched.token }).model)).toBe("holding");
+  });
+  it("labels it by count", () => {
+    expect(labelFor({ kind: "holding", names: ["a.png"], count: 1 }, null)).toBe("Holding 1 file");
+    expect(labelFor({ kind: "holding", names: ["a", "b"], count: 12 }, null)).toBe("Holding 12 files");
+  });
+});

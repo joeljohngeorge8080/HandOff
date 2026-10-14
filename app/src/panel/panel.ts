@@ -31,6 +31,7 @@ export class Panel {
   private peers: Peer[] = [];
   private retention = 90;
   private handEnabled = false;
+  private autoOpen = false;
   private hand: HandControl | null = null;
   private error = "";
   private busyId: string | null = null;
@@ -92,6 +93,7 @@ export class Panel {
       const r = settings.settings.history_retention;
       if (typeof r === "number") this.retention = r;
       this.handEnabled = settings.settings.hand_control_enabled === true;
+      this.autoOpen = settings.settings.auto_open_received === true;
       this.hand = snap.hand_control ?? this.hand;
     } catch (e) {
       this.error = (e as { message?: string })?.message ?? "Could not reach HandOff";
@@ -114,7 +116,7 @@ export class Panel {
         el("div", { text: conn?.device ? conn.device.device_name : "Not connected" }),
         el("div", { class: "muted", text: conn?.connected ? "Dropped files are sent here" : "Choose a device below" })));
 
-    this.root.replaceChildren(head, peerRow, this.devicesSection(active), this.folderSection(snap), this.handSection(), this.historySection(snap));
+    this.root.replaceChildren(head, peerRow, this.devicesSection(active), this.folderSection(snap), this.autoOpenSection(), this.handSection(), this.historySection(snap));
     if (this.error) this.root.append(el("p", { class: "error", text: this.error }));
     const quit = el("button", { class: "quit", text: "Quit HandOff" });
     quit.addEventListener("click", () => this.deps.quit());
@@ -153,6 +155,29 @@ export class Panel {
       el("div", { class: "card row" },
         el("div", { class: "grow ellipsis", title: dir, text: shortenPath(dir) }),
         change));
+  }
+
+  private autoOpenSection(): HTMLElement {
+    const box = el("input", { type: "checkbox" });
+    box.checked = this.autoOpen;
+    box.addEventListener("change", () => void this.toggleAutoOpen(box.checked));
+    return el("section", {},
+      el("h2", { text: "Received files" }),
+      el("label", { class: "card row", title: "Opens each file you receive in your default app" },
+        el("span", { class: "grow", text: "Open files as they arrive" }), box));
+  }
+
+  private async toggleAutoOpen(on: boolean): Promise<void> {
+    this.autoOpen = on;
+    try {
+      await this.deps.core("settings.set", { key: "auto_open_received", value: on });
+      this.error = "";
+    } catch (e) {
+      this.autoOpen = !on;
+      this.error = (e as { message?: string })?.message ?? "Could not change this setting";
+    }
+    await this.refresh();
+    this.render();
   }
 
   private handSection(): HTMLElement {
