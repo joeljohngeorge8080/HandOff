@@ -51,3 +51,18 @@ def test_the_directory_is_created_on_demand(tmp_path):
 def test_saved_pictures_are_private_to_the_user(tmp_path):
     path = PictureStash(tmp_path / "held", clock=lambda: NOW).save(PNG)
     assert oct(os.stat(path).st_mode & 0o777) == "0o600"
+
+
+def test_pictures_are_written_in_binary_mode_so_windows_keeps_them_intact(tmp_path, monkeypatch):
+    """Regression: on Windows a bare os.open() fd is in text mode, so every b"\\n" in the PNG was
+    written as b"\\r\\n" and the picture arrived corrupted. O_BINARY must be part of the flags."""
+    monkeypatch.setattr(os, "O_BINARY", 0x8000, raising=False)  # its value on Windows
+    real_open, seen = os.open, []
+
+    def spy(path, flags, mode=0o777):
+        seen.append(flags)
+        return real_open(path, flags & ~0x8000, mode)
+
+    monkeypatch.setattr(os, "open", spy)
+    PictureStash(tmp_path / "held", clock=lambda: NOW).save(PNG)
+    assert seen and all(flags & 0x8000 for flags in seen)

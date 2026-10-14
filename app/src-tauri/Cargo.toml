@@ -1,6 +1,6 @@
 [package]
 name = "handoff"
-version = "0.1.0"
+version = "0.2.0"
 description = "HandOff - direct LAN file transfer"
 edition = "2021"
 

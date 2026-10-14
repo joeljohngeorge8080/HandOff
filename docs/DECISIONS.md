@@ -1266,7 +1266,7 @@ The user asked for a gesture that copies a selected file and sends it. A pure-CV
 
 # ADR-058: Grab on One Laptop, Release on the Other (claim protocol)
 
-**Status:** Accepted
+**Status:** Accepted (decision 1 amended by ADR-062)
 
 **Supersedes / amends (ADR-045):** ADR-057 decisions 3 and 4 (a release on the grabbing laptop sent the files; "anywhere" meant the grabbing laptop's own camera), API §5-27 (one new peer endpoint).
 
@@ -1274,7 +1274,7 @@ The user asked for a gesture that copies a selected file and sends it. A pure-CV
 
 **Decisions:**
 
-1. **The grabbing laptop only holds.** After a grab it keeps the clipboard's file list (not the bytes) for at most 20 s. An open palm in front of that same laptop **cancels** the grab (`copy_cancelled`); it never sends.
+1. **The grabbing laptop only holds.** After a grab it keeps the clipboard's file list (not the bytes) for at most 20 s. An open palm in front of that same laptop **cancels** the grab (`copy_cancelled`); it never sends. (ADR-062: the cancel takes effect after a 1 s grace.)
 2. **The other laptop claims.** When a closed palm opens in front of a laptop that is holding nothing, that laptop sends a signed `POST /api/v1/handoff/claim` to its one connected peer. The palm machine reports `release` for any stable closed palm that opens (the hand may have been out of view while it was carried); the core decides what it means.
 3. **The holder answers only a valid claim.** The caller is the signer of the request (never anything in the body) and must be the connected trusted peer; the grab must still be fresh. Otherwise `NOTHING_HELD` (409) or `DEVICE_NOT_FOUND`. One grab sends once, whatever the outcome.
 4. **The send is the normal send.** After a valid claim the holder runs the existing `drop.send` (`files.import` -> `transfer.create` -> signed TLS) to the claimer, with every ADR-054/055 rule unchanged: allowed types, <= 50 MB, no folders/symlinks/renamed executables, all-or-nothing, one active transfer. The claimer receives it as any incoming transfer and the receive animation plays.
@@ -1332,6 +1332,24 @@ The user asked for a gesture that copies a selected file and sends it. A pure-CV
 **Reason:** the hand-gesture handoff should feel instant: a picture copied on laptop 1 appears on laptop 2's screen.
 
 **Accepted risk:** a viewer (image decoder, PDF reader) parses data from a trusted LAN peer. The trust model already lets a trusted peer put those files on the desktop; auto-open only removes the user's double-click. Hence opt-in, off by default, allowed types only, and a cap on windows.
+
+---
+
+# ADR-062: A Cancel on the Grabbing Laptop Waits for a Claim
+
+**Status:** Accepted
+
+**Amends (ADR-045):** ADR-058 decision 1 (an open palm on the grabbing laptop cancelled at once).
+
+**Why:** the handoff is made with two laptops next to each other, so the grabbing laptop's camera often also sees the hand open in front of the other laptop. It saw the same open palm at the same moment, cancelled locally at once, and the other laptop's claim, which needs a network round trip, then found nothing (`claim_failed`). The file never arrived.
+
+**Decisions:**
+
+1. **A grace before the cancel.** An open palm on the laptop that holds a grab schedules the cancel `CV_CANCEL_GRACE_SECONDS` (1 s) later instead of cancelling at once. It still never sends and never claims.
+2. **A claim inside the grace wins.** A valid claim (ADR-058 decision 3, unchanged) during the grace is served as usual, and the pending cancel is dropped. One grab still sends once.
+3. **Nothing else moves.** A new grab during the grace replaces the old one and drops its cancel. Expiry (20 s) is unchanged. More open palms during the grace do not add cancels or claims. After the grace, `copy_cancelled` is published and the held display clears, as before.
+
+**Accepted cost:** cancelling on the grabbing laptop shows up to 1 s later.
 
 ---
 

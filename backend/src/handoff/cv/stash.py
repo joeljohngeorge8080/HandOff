@@ -29,7 +29,9 @@ class PictureStash:
             name = f"{stem}.png" if n == 0 else f"{stem}-{n}.png"
             path = self._dir / name
             try:
-                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                # O_BINARY: on Windows a bare fd is in text mode and would mangle the PNG.
+                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+                fd = os.open(path, flags, 0o600)
             except FileExistsError:
                 continue
             with os.fdopen(fd, "wb") as out:

@@ -63,6 +63,29 @@ class Clock:
 
 
 PEER = "11111111-1111-4111-8111-111111111111"
+GRACE = config.CV_CANCEL_GRACE_SECONDS
+
+
+class Sched:
+    """A scheduler that never fires by itself; tests call fire()."""
+
+    def __init__(self) -> None:
+        self.jobs: list[list] = []
+
+    def __call__(self, delay, fn):
+        job = [delay, fn, False]
+        self.jobs.append(job)
+
+        def cancel():
+            job[2] = True
+
+        return cancel
+
+    def fire(self, delay=None):
+        """Run every pending job, or only those scheduled with `delay`."""
+        for d, fn, cancelled in list(self.jobs):
+            if not cancelled and (delay is None or d == delay):
+                fn()
 
 
 def config_max():
@@ -70,7 +93,7 @@ def config_max():
 
 
 def make(files=("/data/a.png",), send_error=None, read_error=None, claim_error=None, active=PEER):
-    bus, seen, sent, claims, clock = EventBus(), [], [], [], Clock()
+    bus, seen, sent, claims, clock, sched = EventBus(), [], [], [], Clock(), Sched()
     bus.subscribe(lambda n, d: seen.append((n, d)))
 
     def read():
@@ -89,7 +112,8 @@ def make(files=("/data/a.png",), send_error=None, read_error=None, claim_error=N
             raise claim_error
         claims.append(1)
 
-    bridge = CopyBridge(bus, send, claim, lambda: active, read, clock)
+    bridge = CopyBridge(bus, send, claim, lambda: active, read, clock, schedule=sched)
+    bridge.sched = sched  # type: ignore[attr-defined]
     return bridge, seen, sent, claims, clock
 
 
@@ -104,6 +128,8 @@ def test_an_open_palm_on_the_grabbing_laptop_cancels_the_grab_and_sends_nothing(
     b, seen, sent, claims, _ = make()
     b.on_grab()
     b.on_release()
+    assert b.sched.jobs[-1][0] == config.CV_CANCEL_GRACE_SECONDS  # ADR-062: after a grace
+    b.sched.fire(GRACE)
     assert sent == [] and claims == []
     assert gestures(seen) == ["copied", "copy_cancelled"]
     with pytest.raises(HandOffError) as e:  # the grab is gone: a claim finds nothing
@@ -133,6 +159,61 @@ def test_a_new_grab_replaces_the_previous_one():
     b.on_grab()
     b.serve_claim(PEER)
     assert sent == [["/data/b.png"]]
+
+
+def test_a_claim_during_the_cancel_grace_still_gets_the_files_regression():
+    """ADR-062. Side by side, the grabbing laptop's camera also sees the hand open in front of
+    the other laptop. Cancelling at once beat the other laptop's claim and nothing was sent."""
+    b, seen, sent, claims, _ = make()
+    b.on_grab()
+    b.on_release()  # this camera saw the hand open too
+    assert gestures(seen) == ["copied"]  # not cancelled yet
+    assert b.serve_claim(PEER) == {"transfer_id": "t1"}
+    b.sched.fire(GRACE)  # the grace ends: the grab was already sent, nothing to cancel
+    assert sent == [["/data/a.png"]] and claims == []
+    assert gestures(seen) == ["copied", "sent"]
+
+
+def test_a_second_open_palm_during_the_grace_neither_claims_nor_cancels_twice():
+    b, seen, _, claims, _ = make()
+    b.on_grab()
+    b.on_release()
+    b.on_release()
+    assert claims == [] and len(b.sched.jobs) == 2  # the expiry and one pending cancel
+    b.sched.fire(GRACE)
+    assert gestures(seen) == ["copied", "copy_cancelled"]
+
+
+def test_a_new_grab_during_the_grace_is_not_cancelled_by_the_old_release():
+    b, seen, sent, _, _ = make()
+    b.on_grab()
+    b.on_release()
+    b.on_grab()  # changed their mind and grabbed again
+    b.sched.fire(GRACE)
+    assert "copy_cancelled" not in gestures(seen)
+    assert b.serve_claim(PEER) == {"transfer_id": "t1"} and sent == [["/data/a.png"]]
+
+
+def test_a_late_cancel_timer_cannot_cancel_a_grab_that_was_claimed_meanwhile():
+    b, seen, _, _, _ = make()
+    b.on_grab()
+    b.on_release()
+    stale = b.sched.jobs[-1][1]  # the pending cancel
+    b.serve_claim(PEER)
+    b.on_grab()  # a fresh grab
+    stale()  # the old timer fires anyway (threading.Timer.cancel can lose that race)
+    assert "copy_cancelled" not in gestures(seen)
+    assert b.serve_claim(PEER) == {"transfer_id": "t1"}
+
+
+def test_after_the_grace_a_claim_finds_nothing():
+    b, _, sent, _, _ = make()
+    b.on_grab()
+    b.on_release()
+    b.sched.fire(GRACE)
+    with pytest.raises(HandOffError) as e:
+        b.serve_claim(PEER)
+    assert e.value.code == "NOTHING_HELD" and sent == []
 
 
 # --- the laptop the closed hand is carried to ---
@@ -298,27 +379,6 @@ def test_tk_hex_dump_decodes_to_the_raw_bytes_regression():
 # ----- what is held, shown, stashed and cleaned up ---------------------------------------
 
 
-class Sched:
-    """A scheduler that never fires by itself; tests call fire()."""
-
-    def __init__(self) -> None:
-        self.jobs: list[list] = []
-
-    def __call__(self, delay, fn):
-        job = [delay, fn, False]
-        self.jobs.append(job)
-
-        def cancel():
-            job[2] = True
-
-        return cancel
-
-    def fire(self):
-        for _delay, fn, cancelled in list(self.jobs):
-            if not cancelled:
-                fn()
-
-
 def make_held(files=("/data/a.png",), image=None):
     bus, seen, sent, stashed, discarded, sched = EventBus(), [], [], [], [], Sched()
     bus.subscribe(lambda n, d: seen.append((n, d)))
@@ -366,9 +426,10 @@ def test_names_are_sanitised_and_bounded_before_they_reach_the_ui():
 
 
 def test_cancelling_sending_or_replacing_a_grab_clears_what_the_ui_shows():
-    b, seen, *_ = make_held()
+    b, seen, *_, sched = make_held()
     b.on_grab()
-    b.on_release()  # cancel
+    b.on_release()  # cancel, once the grace is over
+    sched.fire(GRACE)
     assert held_events(seen)[-1] == {"names": [], "count": 0}
 
     b, seen, *_ = make_held()
@@ -454,6 +515,7 @@ def test_the_temporary_picture_is_removed_when_the_grab_is_cancelled_replaced_or
     b, _, _, _, discarded, sched = make_held(files=(), image=PNG)
     b.on_grab()
     b.on_release()
+    sched.fire(GRACE)  # the cancel grace ends
     assert discarded == ["/data/held/image-1.png"]
     b.on_grab()
     b.on_grab()  # replaced: the first copy goes

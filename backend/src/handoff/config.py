@@ -110,5 +110,6 @@ CV_PALM_HOLD_SECONDS = 0.25  # a palm / fist pose must be stable this long to co
 CV_GRAB_WINDOW_SECONDS = 1.5  # the fist must follow the open palm within this
 CV_HOLD_MAX_SECONDS = 20.0  # a grab that is never released expires
 CV_COPY_COOLDOWN_SECONDS = 2.0  # after a release, no new grab until this has passed
+CV_CANCEL_GRACE_SECONDS = 1.0  # an open palm on the grabbing laptop cancels after this (ADR-062)
 CV_COPY_SETTLE_SECONDS = 0.15  # time the file manager gets to fill the clipboard after Ctrl+C
 CV_CLIPBOARD_TIMEOUT_SECONDS = 2.0

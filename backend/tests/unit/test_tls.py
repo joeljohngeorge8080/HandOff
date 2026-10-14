@@ -74,3 +74,20 @@ def test_server_key_material_is_owner_only_and_rewritten_atomically(tmp_path, id
     for f in (cert, key):
         assert stat.S_IMODE(os.stat(f).st_mode) == 0o600
     assert sorted(p.name for p in paths.keys_dir.iterdir()) == ["tls-cert.pem", "tls-key.pem"]
+
+
+def test_tls_files_are_written_in_binary_mode(tmp_path, monkeypatch):
+    """On Windows a bare os.open() fd is in text mode and would rewrite the PEM's newlines."""
+    monkeypatch.setattr(os, "O_BINARY", 0x8000, raising=False)  # its value on Windows
+    real_open, seen = os.open, []
+
+    def spy(path, flags, mode=0o777):
+        seen.append(flags)
+        return real_open(path, flags & ~0x8000, mode)
+
+    paths = AppPaths(tmp_path / "data")
+    paths.ensure()
+    ident = new_identity(tmp_path, "b")
+    monkeypatch.setattr(os, "open", spy)
+    tls.write_server_tls_files(paths, ident)
+    assert len(seen) == 2 and all(flags & 0x8000 for flags in seen)

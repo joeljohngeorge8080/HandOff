@@ -5,7 +5,12 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 out="$root/app/src-tauri/binaries"
 "$root/scripts/fetch-hand-model.sh"  # pinned + verified; the app never downloads it (ADR-056)
-case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) sep=";" ;; *) sep=":" ;; esac
+# tkinter: Linux reads the clipboard for the hand COPY gesture through it (ADR-057); Windows
+# uses ctypes, so it is left out there.
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) sep=";"; no_tk=(--exclude-module tkinter) ;;
+  *) sep=":"; no_tk=() ;;
+esac
 cd "$root/backend"
 rm -rf build dist "$out/handoff-core"
 uv run --group build pyinstaller --noconfirm --clean \
@@ -16,7 +21,7 @@ uv run --group build pyinstaller --noconfirm --clean \
   --hidden-import cryptography \
   --collect-all mediapipe --collect-submodules pyautogui \
   --add-data "models/hand_landmarker.task${sep}." \
-  --exclude-module pytest --exclude-module mypy --exclude-module tkinter \
+  --exclude-module pytest --exclude-module mypy "${no_tk[@]}" \
   packaging/entry.py
 mkdir -p "$out"
 mv dist/handoff-core "$out/handoff-core"

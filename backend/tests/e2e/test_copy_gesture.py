@@ -74,11 +74,27 @@ def test_opening_the_hand_on_the_grabbing_laptop_sends_nothing_and_cancels_the_g
     on_clipboard([str(make(tmp_path, "a.txt"))])
     a_seen, b_seen = gestures(a), gestures(b)
     a.core.hand_control.on_grab()
-    a.core.hand_control.on_release()  # same laptop: cancel
-    assert a_seen == ["copied", "copy_cancelled"]
+    a.core.hand_control.on_release()  # same laptop: cancel, after the grace (ADR-062)
+    wait_for(lambda: a_seen == ["copied", "copy_cancelled"], what="the grab to be cancelled")
     assert a.ok("history.list")["items"] == [] and b.received_files() == {}
     b.core.hand_control.on_release()  # nothing is held any more
     assert b_seen == ["claim_failed"] and b.received_files() == {}
+
+
+def test_side_by_side_both_cameras_see_the_release_and_the_file_still_arrives_regression(
+    pair, tmp_path, on_clipboard
+):
+    """ADR-062: laptop A's camera also sees the hand open in front of B. A used to cancel at
+    once, so B's claim found nothing and the file never arrived."""
+    a, b = pair
+    connect_pair(a, b)
+    on_clipboard([str(make(tmp_path, "side.txt", b"both saw it"))])
+    a_seen, b_seen = gestures(a), gestures(b)
+    a.core.hand_control.on_grab()
+    a.core.hand_control.on_release()  # A sees the hand open first
+    b.core.hand_control.on_release()  # ...and so does B, which claims
+    wait_for(lambda: b.received_files() == {"side.txt": b"both saw it"}, what="the file on B")
+    assert b_seen == ["claimed"] and a_seen == ["copied", "sent"]
 
 
 def test_a_release_when_the_other_laptop_holds_nothing_is_refused(pair):

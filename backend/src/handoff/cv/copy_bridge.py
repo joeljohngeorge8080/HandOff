@@ -8,7 +8,9 @@ laptop's `release` finds nothing held, so it sends a signed *claim* to its conne
 (`POST /api/v1/handoff/claim`). The holder answers a claim only from its trusted connected peer,
 only while the grab is still fresh, and then sends through the same `drop.send` pipeline as a
 dragged drop (every type, size, symlink and executable check, all-or-nothing). The worker never
-names a file; the clipboard is read only after a grab.
+names a file; the clipboard is read only after a grab. The open palm that cancels takes effect
+only after a short grace (ADR-062): laptops side by side both see the hand open, and the other
+laptop's claim must still find the grab.
 
 While something is held the UI is told what it is (`hand.held`: names and a count, never paths)
 so the strip can show it; the event is repeated, empty, whenever the grab ends.
@@ -82,6 +84,7 @@ class CopyBridge:
         self._held: tuple[list[str], float] | None = None
         self._temp: list[str] = []  # files we wrote ourselves; the user's own files never go here
         self._cancel_expiry: Cancel | None = None
+        self._cancel_pending: Cancel | None = None  # an open palm here, waiting out the grace
         self._generation = 0
 
     def _say(self, gesture: str) -> None:
@@ -97,14 +100,18 @@ class CopyBridge:
 
     # ----- holding ------------------------------------------------------------------------
 
+    def _stop_timers(self) -> None:
+        self._generation += 1  # a timer that already fired finds a newer generation and stops
+        for cancel in (self._cancel_expiry, self._cancel_pending):
+            if cancel is not None:
+                cancel()
+        self._cancel_expiry = self._cancel_pending = None
+
     def _forget(self) -> bool:
         """Drop whatever is held (and our temporary copies). True if something was held."""
         had = self._held is not None
         self._held = None
-        self._generation += 1
-        if self._cancel_expiry is not None:
-            self._cancel_expiry()
-            self._cancel_expiry = None
+        self._stop_timers()
         temp, self._temp = self._temp, []
         for path in temp:
             try:
@@ -175,8 +182,13 @@ class CopyBridge:
     def on_release(self) -> None:
         with self._lock:
             if self._live() is not None:
-                self._clear()  # the grabbing laptop: opening the hand here cancels
-                self._say("copy_cancelled")
+                # The grabbing laptop: opening the hand here cancels, but only after the grace,
+                # so a claim from the laptop the hand really opened at still wins (ADR-062).
+                if self._cancel_pending is None:
+                    generation = self._generation
+                    self._cancel_pending = self._schedule(
+                        config.CV_CANCEL_GRACE_SECONDS, lambda: self._cancel(generation)
+                    )
                 return
             self._clear()  # an expired grab, if any
         try:
@@ -190,6 +202,13 @@ class CopyBridge:
         else:
             self._say("claimed")
 
+    def _cancel(self, generation: int) -> None:
+        with self._lock:
+            if generation != self._generation:
+                return  # claimed, replaced or expired during the grace
+            self._clear()
+            self._say("copy_cancelled")
+
     # ----- the peer's claim (called by the peer API) -------------------------------------
 
     def serve_claim(self, requester_device_id: str) -> dict[str, str]:
@@ -202,10 +221,7 @@ class CopyBridge:
                 raise HandOffError("NOTHING_HELD", "The other device is not holding anything.")
             temp = list(self._temp)
             self._held, self._temp = None, []  # one grab sends once, whatever the outcome
-            self._generation += 1
-            if self._cancel_expiry is not None:
-                self._cancel_expiry()
-                self._cancel_expiry = None
+            self._stop_timers()
             self._publish_held(None)
             try:
                 result = self._send(paths)  # imports its own copies before it returns

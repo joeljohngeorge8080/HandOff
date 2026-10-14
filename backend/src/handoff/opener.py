@@ -22,7 +22,7 @@ def _refuse(message: str) -> HandOffError:
 
 def _launch(path: Path) -> None:
     if sys.platform == "win32":
-        os.startfile(str(path))  # type: ignore[attr-defined]  # noqa: S606
+        os.startfile(str(path))  # type: ignore[attr-defined,unused-ignore]  # noqa: S606
         return
     tool = "open" if sys.platform == "darwin" else "xdg-open"
     subprocess.Popen(  # noqa: S603

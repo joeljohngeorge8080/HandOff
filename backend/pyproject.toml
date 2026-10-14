@@ -1,6 +1,6 @@
 [project]
 name = "handoff"
-version = "0.1.0"
+version = "0.2.0"
 description = "HandOff Python application core"
 authors = [
     { name = "Joel John George", email = "joeljohngeorge2005@gmail.com" }
