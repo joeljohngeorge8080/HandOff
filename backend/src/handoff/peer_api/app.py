@@ -192,6 +192,8 @@ def create_app(ctx: PeerContext) -> FastAPI:
         peer = await run_in_threadpool(authenticate, request)
         if ctx.claims is None:
             raise HandOffError("NOTHING_HELD", "This device is not holding anything.")
+        # Like an inbound transfer: a trusted peer is adopted if a restart forgot the connection.
+        await run_in_threadpool(ctx.connections.allow_inbound_transfer, peer.device_id)
         result = await run_in_threadpool(ctx.claims, peer.device_id)
         return JSONResponse(result, status_code=202)
 
