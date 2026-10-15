@@ -12,43 +12,54 @@ export interface PlayRequest {
 export const MAX_ACTIVE = 4;
 const MAX_COORD = 100_000;
 
-interface Running {
+export interface RunningFx {
   kind: FxKind;
   x: number;
   y: number;
   start: number;
 }
 
-const DURATION: Record<FxKind, number> = { grab: GRAB_MS, drop: DROP_MS };
+export type Durations = Readonly<Record<FxKind, number>>;
+
+const CANVAS_DURATION: Durations = { grab: GRAB_MS, drop: DROP_MS };
 
 export class Timeline {
-  private running: Running[] = [];
+  private running_: RunningFx[] = [];
+
+  /** `durations` differ per renderer: the shader effects (ADR-064) last longer than the canvas ones. */
+  constructor(private readonly durations: Durations = CANVAS_DURATION) {}
 
   add(kind: FxKind, x: number, y: number, now: number): void {
-    this.running.push({ kind, x, y, start: now });
-    if (this.running.length > MAX_ACTIVE) this.running.splice(0, this.running.length - MAX_ACTIVE);
+    this.running_.push({ kind, x, y, start: now });
+    if (this.running_.length > MAX_ACTIVE) this.running_.splice(0, this.running_.length - MAX_ACTIVE);
   }
 
   count(): number {
-    return this.running.length;
+    return this.running_.length;
   }
 
   active(now: number): boolean {
     this.prune(now);
-    return this.running.length > 0;
+    return this.running_.length > 0;
+  }
+
+  /** What is playing at `now`, oldest first; finished effects are dropped. */
+  running(now: number): RunningFx[] {
+    this.prune(now);
+    return this.running_.map((e) => ({ ...e }));
   }
 
   /** Everything to draw at `now`; finished effects are dropped. */
   shapes(now: number): Shape[] {
     this.prune(now);
-    return this.running.flatMap((e) => {
-      const t = Math.max(0, (now - e.start) / DURATION[e.kind]);
+    return this.running_.flatMap((e) => {
+      const t = Math.max(0, (now - e.start) / this.durations[e.kind]);
       return e.kind === "grab" ? grabShapes(t, e.x, e.y) : dropShapes(t, e.x, e.y);
     });
   }
 
   private prune(now: number): void {
-    this.running = this.running.filter((e) => now - e.start < DURATION[e.kind]);
+    this.running_ = this.running_.filter((e) => now - e.start < this.durations[e.kind]);
   }
 }
 

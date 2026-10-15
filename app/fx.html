@@ -7,9 +7,12 @@
     <style>
       html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
       canvas { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+      #gl { display: none; }
     </style>
   </head>
   <body>
+    <!-- The liquid-glass shader draws on #gl (ADR-064); #fx is the 2D fallback (ADR-059). -->
+    <canvas id="gl" aria-hidden="true"></canvas>
     <canvas id="fx" aria-hidden="true"></canvas>
     <script type="module" src="/src/fx/fx.ts"></script>
   </body>

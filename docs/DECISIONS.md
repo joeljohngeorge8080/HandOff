@@ -1285,7 +1285,7 @@ The user asked for a gesture that copies a selected file and sends it. A pure-CV
 
 # ADR-059: Full-Screen Gesture Effects Overlay
 
-**Status:** Accepted
+**Status:** Accepted (visuals replaced by ADR-064)
 
 **Why:** The palm grab and release deserve a visible reaction where the user is working, not only on the thin edge strip. The two effects (a liquid-glass bubble that implodes on grab, a burst plus five neon wavelets on release) were prototyped in a standalone PyQt6 script; PyQt6 would be a second GUI toolkit and a new dependency, so they are ported into the existing Tauri/TypeScript UI instead.
 
@@ -1374,6 +1374,27 @@ The user asked for a gesture that copies a selected file and sends it. A pure-CV
 **Unchanged:** no Disconnect or untrust UI, LAN only, TLS identity verification, 50 MB / four-type limits, never overwrite, the CV worker never calls transfer APIs.
 
 **Accepted cost:** a broadcast drop cannot target a single device (a per-device drop target is a later decision). Sending the same files to N peers reads them N times.
+
+---
+
+# ADR-064: Liquid-Glass Water Shader for the Grab and Drop Effects
+
+**Status:** Accepted
+
+**Amends (ADR-045):** ADR-059 decision 1 and 4 (what the overlay draws and how long it stays up). The overlay window, its click-through behaviour, the `fx-play` event and the rule that it is feedback only are unchanged.
+
+**Why:** the user supplied a liquid-glass "grab and drop" animation (`animation/liquid_glass_fx (1).py`, a GLSL fragment shader driven by `moderngl`/`pygame`). It should be the animation that plays on the palm grab and release instead of the 2D canvas shapes.
+
+**Decisions:**
+
+1. **Ported, not embedded.** The Python demo is not shipped or run (it would need Python GUI/GL packages and a second toolkit, which ADR-059 already ruled out). Its fragment shader is ported to **WebGL2 (GLSL ES 3.00)** inside the existing `fx` page. No new dependency.
+2. **Overlay output, not a wallpaper.** The original refracts a wallpaper it renders itself. The overlay sits over the user's real screen, which HandOff must not capture, so the background distortion is dropped. What remains is the same water height field and lighting: the collapsing rings and pinch (grab), the splash and outgoing rings (drop), the specular highlights, and the glass bead with its bright rim under the cursor. They are written as premultiplied colour with alpha, so everything else on the screen shows through untouched.
+3. **Same contract.** Still one local event (`fx-play`, `grab` / `drop`, validated), no core or peer calls, no input, at most 4 effects at once, nothing animating while none plays, and `prefers-reduced-motion` disables it. Time-based: ages are computed from wall-clock time.
+4. **Longer windows.** The shader's animations last about 1.9 s (grab) and 2.9 s (drop), so the Rust side hides the overlay after 2.0 s and 3.0 s instead of a fixed 1.6 s. It is still click-through the whole time.
+5. **Bounded cost.** The canvas is rendered at a reduced resolution (about one million pixels at most, then scaled up by the page), and the loop runs only while an effect is playing.
+6. **Fallback.** If WebGL2 is missing, the shader does not compile, or the context is lost, the previous 2D canvas effects (ADR-059) play instead. A broken GPU path never costs the user the feedback.
+
+**Accepted cost:** the look differs from the standalone demo (no refracted background). The overlay stays up about 1.4 s longer than before for a drop.
 
 ---
 

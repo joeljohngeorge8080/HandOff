@@ -19,8 +19,19 @@ use super::geometry::Screen;
 use super::window::read_screens;
 
 pub const LABEL: &str = "fx";
-/// The longest effect is about 1.1 s; the window is hidden shortly after.
-const HIDE_AFTER_MS: u64 = 1600;
+/// The liquid-glass shader effects last about 1.9 s (grab) and 2.9 s (drop), ADR-064; the window
+/// is hidden shortly after. It is click-through the whole time.
+const GRAB_HIDE_AFTER_MS: u64 = 2000;
+const DROP_HIDE_AFTER_MS: u64 = 3000;
+
+/// How long the overlay stays up for an effect (`grab` / anything else is the drop).
+pub fn hide_after_ms(kind: &str) -> u64 {
+    if kind == "grab" {
+        GRAB_HIDE_AFTER_MS
+    } else {
+        DROP_HIDE_AFTER_MS
+    }
+}
 /// Time for the window manager to map the window before the effect starts drawing.
 const MAP_DELAY_MS: u64 = 50;
 /// Bumped for every effect, so only the newest one gets to hide the window.
@@ -143,7 +154,7 @@ fn play_blocking(app: &AppHandle, kind: &'static str) -> tauri::Result<()> {
     let (x, y) = local_point(cursor, &screen);
     app.emit_to(LABEL, "fx-play", json!({"kind": kind, "x": x, "y": y}))?;
 
-    std::thread::sleep(Duration::from_millis(HIDE_AFTER_MS));
+    std::thread::sleep(Duration::from_millis(hide_after_ms(kind)));
     if GENERATION.load(Ordering::SeqCst) == generation {
         win.hide()?;
         let _ = win.set_size(PhysicalSize::new(64, 64));
@@ -162,6 +173,15 @@ mod tests {
             rect: Rect { x, y, w, h },
             scale,
         }
+    }
+
+    #[test]
+    fn the_overlay_stays_up_long_enough_for_each_shader_effect() {
+        // ADR-064: the shader plays for about 1.9 s (grab) and 2.9 s (drop).
+        assert!(hide_after_ms("grab") >= 1900);
+        assert!(hide_after_ms("drop") >= 2900);
+        assert!(hide_after_ms("drop") > hide_after_ms("grab"));
+        assert_eq!(hide_after_ms("anything else"), hide_after_ms("drop"));
     }
 
     fn gesture(name: &str) -> Value {
