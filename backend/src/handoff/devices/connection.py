@@ -1,9 +1,10 @@
-"""Single-peer connection management (ADR-046, ADR-047, FR-011..FR-016).
+"""Connection management for up to MAX_CONNECTED_PEERS peers (ADR-063, FR-011..FR-016).
 
-Exactly one peer is active. Picking another device performs an internal graceful
-disconnect first and is refused while a transfer is running. A peer that stops answering
-health checks is marked offline (and any running upload is aborted); when it answers again it
-is restored without a new handshake because trust is persistent.
+Connecting a device adds it; nothing is disconnected and a running transfer never blocks it.
+When every slot is taken the request is refused (`DEVICE_LIMIT_REACHED`), except that an
+*offline* peer's slot is reclaimed. A peer that stops answering health checks is marked offline
+(and only its own running uploads are aborted); when it answers again it is restored without a
+new handshake because trust is persistent.
 """
 
 from __future__ import annotations
@@ -13,13 +14,18 @@ import platform as _platform
 import threading
 import uuid
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
 from handoff.audit import AuditEvent, record_event
-from handoff.config import HEALTH_FAILURE_THRESHOLD, HEALTH_INTERVAL_SECONDS
+from handoff.config import (
+    HEALTH_FAILURE_THRESHOLD,
+    HEALTH_INTERVAL_SECONDS,
+    MAX_CONNECTED_PEERS,
+)
 from handoff.core import Core
-from handoff.db.repositories import DeviceRepository, TransferRepository
+from handoff.db.repositories import DeviceRepository
 from handoff.devices.client import PeerClient, PinMismatchError, error_from_response
 from handoff.devices.discovery import Discovery
 from handoff.errors import HandOffError
@@ -70,9 +76,12 @@ class ConnectionManager:
         self.core, self.client, self.discovery, self._own_port = core, client, discovery, own_port
         self._interval, self._threshold = health_interval, failure_threshold
         self._lock = threading.RLock()
-        self._active: ActivePeer | None = None
+        self._peers: dict[str, ActivePeer] = {}
         self._monitor: PeriodicTask | None = None
-        self.on_offline: Callable[[], None] | None = None
+        self._prober = ThreadPoolExecutor(
+            max_workers=MAX_CONNECTED_PEERS, thread_name_prefix="peer-probe"
+        )
+        self.on_offline: Callable[[str], None] | None = None
         self._published: dict[str, Any] | None = None
 
     def publish_if_changed(self) -> None:
@@ -93,42 +102,72 @@ class ConnectionManager:
     def stop(self) -> None:
         if self._monitor:
             self._monitor.stop()
+        self._prober.shutdown(wait=False, cancel_futures=True)
 
     # ----- state --------------------------------------------------------------------------
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
-            a = self._active
-            return {
-                "connected": bool(a and a.status == "connected"),
-                "device": a.as_dict() if a else None,
-            }
+            devices = [p.as_dict() for p in self._peers.values()]
+            online = [d for d in devices if d["status"] == "connected"]
+            shown = online[0] if online else (devices[0] if devices else None)
+            return {"connected": bool(online), "devices": devices, "device": shown}
 
-    def active_peer(self) -> ActivePeer | None:
+    def peers(self) -> list[ActivePeer]:
+        """Every peer holding a slot, online or not."""
         with self._lock:
-            return self._active
+            return list(self._peers.values())
+
+    def connected_peers(self) -> list[ActivePeer]:
+        """Peers that can be sent to right now."""
+        with self._lock:
+            return [p for p in self._peers.values() if p.status == "connected"]
+
+    def get(self, device_id: str) -> ActivePeer | None:
+        with self._lock:
+            return self._peers.get(device_id)
+
+    def is_connected(self, device_id: str) -> bool:
+        with self._lock:
+            peer = self._peers.get(device_id)
+            return peer is not None and peer.status == "connected"
 
     def require_connected(self, device_id: str) -> ActivePeer:
         with self._lock:
-            a = self._active
-            if a is None or a.device_id != device_id:
-                raise HandOffError("DEVICE_NOT_FOUND", "That device is not the connected device.")
+            a = self._peers.get(device_id)
+            if a is None:
+                raise HandOffError("DEVICE_NOT_FOUND", "That device is not connected.")
             if a.status != "connected" or not a.address or not a.port:
                 raise HandOffError("DEVICE_OFFLINE", f"{a.device_name} is offline.")
             return a
+
+    def _admit(self, device_id: str) -> None:
+        """Make room for `device_id` (caller holds the lock). Offline peers give up their slot."""
+        if device_id in self._peers or len(self._peers) < MAX_CONNECTED_PEERS:
+            return
+        for gone in self._peers.values():
+            if gone.status != "connected":
+                del self._peers[gone.device_id]
+                with self.core.db.write_session() as s:
+                    row = DeviceRepository(s).get_by_device_id(gone.device_id)
+                    if row:
+                        row.status = "available"
+                return
+        raise HandOffError(
+            "DEVICE_LIMIT_REACHED",
+            f"Up to {MAX_CONNECTED_PEERS} devices can be connected at the same time.",
+        )
 
     # ----- listing ------------------------------------------------------------------------
 
     def discover(self) -> list[dict[str, Any]]:
         with self.core.db.session() as s:
             known = {d.device_id: d for d in DeviceRepository(s).list_all()}
-        with self._lock:
-            active = self._active
         out = []
         for p in self.discovery.peers():
             status = "available"
-            if active and active.device_id == p.device_id:
-                status = active.status
+            if (held := self.get(p.device_id)) is not None:
+                status = held.status
             out.append(
                 {
                     "device_id": p.device_id,
@@ -156,11 +195,9 @@ class ConnectionManager:
                 }
                 for d in rows
             ]
-        with self._lock:
-            a = self._active
         for d in devices:
-            if a and a.device_id == d["device_id"]:
-                d["status"] = a.status
+            if (held := self.get(str(d["device_id"]))) is not None:
+                d["status"] = held.status
         return devices
 
     # ----- outbound connect (user clicked Connect) ----------------------------------------
@@ -176,13 +213,10 @@ class ConnectionManager:
             peer = self.discovery.get(device_id)
             if peer is None:
                 raise HandOffError("DEVICE_NOT_FOUND", "That device is no longer visible.")
-            active = self._active
-            if active and active.device_id == device_id and active.status == "connected":
+            held = self._peers.get(device_id)
+            if held and held.status == "connected":
                 return self.snapshot()
-            if active and active.device_id != device_id and active.status == "connected":
-                self._ensure_no_active_transfer()
-                self._release_outbound(active)
-            self._active = None
+            self._admit(device_id)
 
             with self.core.db.session() as s:
                 row = DeviceRepository(s).get_by_device_id(device_id)
@@ -221,7 +255,7 @@ class ConnectionManager:
                 raise PinMismatchError
             name = str(body.get("device_name") or peer.device_name)[:64]
 
-            with self.core.db.session() as s:
+            with self.core.db.write_session() as s:
                 repo = DeviceRepository(s)
                 repo.upsert(
                     device_id,
@@ -236,34 +270,8 @@ class ConnectionManager:
                 record_event(
                     s, AuditEvent.DEVICE_CONNECTED, f"Connected to {name}.", device_id=device_id
                 )
-            self._active = ActivePeer(device_id, name, peer.address, peer.port, expected)
+            self._peers[device_id] = ActivePeer(device_id, name, peer.address, peer.port, expected)
             return self.snapshot()
-
-    def _ensure_no_active_transfer(self) -> None:
-        with self.core.db.session() as s:
-            if TransferRepository(s).get_active() is not None:
-                raise HandOffError(
-                    "INVALID_STATE", "A transfer is in progress. Wait until it finishes to switch."
-                )
-
-    def _release_outbound(self, active: ActivePeer) -> None:
-        """Graceful internal disconnect (ADR-047). Best effort: the switch proceeds regardless."""
-        if not active.address or not active.port:
-            return
-        try:
-            self.client.request(
-                active.address,
-                active.port,
-                "DELETE",
-                "/api/v1/connection",
-                expected_key=active.public_key,
-            )
-        except HandOffError as exc:
-            log.warning("Could not notify %s of disconnect: %s", active.device_name, exc.code)
-        with self.core.db.session() as s:
-            row = DeviceRepository(s).get_by_device_id(active.device_id)
-            if row:
-                row.status = "available"
 
     def _audit_tls_failure(self, device_id: str, message: str) -> None:
         with self.core.db.session() as s:
@@ -276,13 +284,8 @@ class ConnectionManager:
     ) -> dict[str, Any]:
         """POST /connection: the connecting user's click makes the device trusted (FR-011)."""
         with self._lock:
-            active = self._active
-            if active and active.device_id != device_id and active.status == "connected":
-                raise HandOffError(
-                    "DEVICE_ALREADY_CONNECTED",
-                    "This device is already connected to another device.",
-                )
-            with self.core.db.session() as s:
+            self._admit(device_id)
+            with self.core.db.write_session() as s:
                 repo = DeviceRepository(s)
                 repo.upsert(
                     device_id, name, platform, last_ip=address, port=port,
@@ -292,7 +295,7 @@ class ConnectionManager:
                 record_event(
                     s, AuditEvent.DEVICE_CONNECTED, f"{name} connected.", device_id=device_id
                 )
-            self._active = ActivePeer(device_id, name, address, port, public_key)
+            self._peers[device_id] = ActivePeer(device_id, name, address, port, public_key)
         self.publish_if_changed()
         return {
             "connection_id": f"conn_{uuid.uuid4().hex[:12]}",
@@ -304,7 +307,7 @@ class ConnectionManager:
         }
 
     def allow_inbound_transfer(self, device_id: str) -> None:
-        """A trusted device may send if it is the connected peer, or if no peer is connected."""
+        """A trusted device may send if it is connected, or if a slot is free (or reclaimable)."""
         try:
             self._allow_inbound_transfer(device_id)
         finally:
@@ -312,29 +315,28 @@ class ConnectionManager:
 
     def _allow_inbound_transfer(self, device_id: str) -> None:
         with self._lock:
-            active = self._active
-            if active and active.device_id != device_id and active.status == "connected":
-                raise HandOffError(
-                    "DEVICE_ALREADY_CONNECTED", "This device is connected to another device."
-                )
-            if active and active.device_id == device_id:
-                active.status, active.fail_count = "connected", 0
+            held = self._peers.get(device_id)
+            if held:
+                held.status, held.fail_count = "connected", 0
                 return
-            with self.core.db.session() as s:
+            with self.core.db.session() as s:  # read only: no session may nest inside a writer
                 row = DeviceRepository(s).get_by_device_id(device_id)
                 if row is None or not row.is_trusted or not row.public_key:
                     raise HandOffError("DEVICE_NOT_TRUSTED", "Device is not trusted.")
-                self._active = ActivePeer(
+                known = ActivePeer(
                     device_id, row.device_name, row.last_ip, row.port, row.public_key
                 )
-                row.status = "connected"
+            self._admit(device_id)
+            with self.core.db.write_session() as s:
+                if row := DeviceRepository(s).get_by_device_id(device_id):
+                    row.status = "connected"
+            self._peers[device_id] = known
 
     def release_inbound(self, device_id: str) -> None:
         with self._lock:
-            if self._active and self._active.device_id == device_id:
-                self._active = None
+            self._peers.pop(device_id, None)
         self.publish_if_changed()
-        with self.core.db.session() as s:
+        with self.core.db.write_session() as s:
             row = DeviceRepository(s).get_by_device_id(device_id)
             if row:
                 row.status = "available"
@@ -353,41 +355,45 @@ class ConnectionManager:
             return False
 
     def _tick(self) -> None:
+        """Probe every peer at once (a dead one must not delay the others) and apply the results."""
         with self._lock:
-            active = self._active
-            if active is None:
-                return
-            found = self.discovery.get(active.device_id)
-            if found and (found.address, found.port) != (active.address, active.port):
-                active.address, active.port = found.address, found.port  # IP/port changed
-            if not active.address or not active.port:
-                return
-            snapshot = ActivePeer(**{**active.__dict__})
-        ok = self._probe(snapshot)
-        callback = None
+            snapshots = []
+            for peer in self._peers.values():
+                found = self.discovery.get(peer.device_id)
+                if found and (found.address, found.port) != (peer.address, peer.port):
+                    peer.address, peer.port = found.address, found.port  # IP/port changed
+                if peer.address and peer.port:
+                    snapshots.append(ActivePeer(**{**peer.__dict__}))
+        if not snapshots:
+            return
+        results = list(self._prober.map(self._probe, snapshots))
+        went_offline: list[str] = []
         with self._lock:
-            if self._active is None or self._active.device_id != snapshot.device_id:
-                return
-            a = self._active
-            if ok:
-                a.fail_count = 0
-                if a.status == "offline":
-                    a.status = "connected"
-                    self._record_status(
-                        a, "connected", AuditEvent.DEVICE_CONNECTED, "is back online"
-                    )
-            else:
-                a.fail_count += 1
-                if a.status == "connected" and a.fail_count >= self._threshold:
-                    a.status = "offline"
-                    self._record_status(a, "offline", AuditEvent.DEVICE_OFFLINE, "went offline")
-                    callback = self.on_offline
+            for snap, ok in zip(snapshots, results, strict=True):
+                a = self._peers.get(snap.device_id)
+                if a is None:  # released while we were probing
+                    continue
+                if ok:
+                    a.fail_count = 0
+                    if a.status == "offline":
+                        a.status = "connected"
+                        self._record_status(
+                            a, "connected", AuditEvent.DEVICE_CONNECTED, "is back online"
+                        )
+                else:
+                    a.fail_count += 1
+                    if a.status == "connected" and a.fail_count >= self._threshold:
+                        a.status = "offline"
+                        self._record_status(a, "offline", AuditEvent.DEVICE_OFFLINE, "went offline")
+                        went_offline.append(a.device_id)
         self.publish_if_changed()
+        callback = self.on_offline
         if callback:
-            callback()
+            for device_id in went_offline:
+                callback(device_id)
 
     def _record_status(self, a: ActivePeer, status: str, event: AuditEvent, what: str) -> None:
-        with self.core.db.session() as s:
+        with self.core.db.write_session() as s:
             row = DeviceRepository(s).get_by_device_id(a.device_id)
             if row:
                 row.status = status

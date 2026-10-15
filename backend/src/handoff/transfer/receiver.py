@@ -216,8 +216,12 @@ class ReceiverService:
             )
 
     def _check_disk(self, sender: PeerIdentity, manifest: Manifest, destination: Path) -> None:
-        staging_needed = 2 * manifest.total_size + _DISK_SAFETY_MARGIN  # archive + extracted copy
-        dest_needed = manifest.total_size + _DISK_SAFETY_MARGIN
+        # Other incoming transfers (ADR-063) have promised the same disk: count what they will
+        # still need so that two transfers that each fit alone are not both accepted. The caller
+        # holds the lock that also registers the new job, so this cannot race.
+        promised = sum(j.manifest.total_size for j in self._jobs.values())
+        staging_needed = 2 * (manifest.total_size + promised) + _DISK_SAFETY_MARGIN  # archive+copy
+        dest_needed = manifest.total_size + promised + _DISK_SAFETY_MARGIN
         needed = staging_needed
         short = self._free_bytes() < staging_needed
         if not short and self._free_bytes(destination) < dest_needed:
@@ -237,7 +241,7 @@ class ReceiverService:
         now = utcnow()
         tid = manifest.transfer_id
         try:
-            with self.core.db.session() as s:
+            with self.core.db.write_session() as s:
                 repo = TransferRepository(s)
                 t = Transfer(
                     id=tid, direction="received", source_device_id=sender.device_id,
@@ -283,7 +287,7 @@ class ReceiverService:
             if job.state != "accepted":
                 raise HandOffError("INVALID_STATE", "This transfer is not waiting for data.")
             job.state = "uploading"
-        with self.core.db.session() as s:
+        with self.core.db.write_session() as s:
             repo = TransferRepository(s)
             t = must(repo.get(transfer_id), "transfer")
             repo.set_status(t, TransferStatus.TRANSFERRING)
@@ -334,7 +338,7 @@ class ReceiverService:
         created: list[Path] = []
         try:
             stored = self._copy_to_destination(job, results, created)
-            with self.core.db.session() as s:
+            with self.core.db.write_session() as s:
                 reply = self._record_results(s, job, results, stored)
         except BaseException:
             for p in created:  # only files this transfer created; nothing pre-existing
@@ -465,7 +469,7 @@ class ReceiverService:
     def fail(self, job: ReceiverJob, code: str, message: str) -> None:
         """Mark the transfer failed (idempotent) and remove all temporary data."""
         tid = job.manifest.transfer_id
-        with self.core.db.session() as s:
+        with self.core.db.write_session() as s:
             repo = TransferRepository(s)
             t = repo.get(tid)
             if t is not None and TransferStatus(t.status) not in TERMINAL_STATUSES:

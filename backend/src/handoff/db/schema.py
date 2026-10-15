@@ -10,21 +10,34 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Mapping
 
-from sqlalchemy import Connection, inspect, select
+from sqlalchemy import Connection, inspect, select, text
 
 from handoff.db.engine import Database
-from handoff.db.models import Base, Setting, utcnow
+from handoff.db.models import ACTIVE_PEER_EXPRESSION, TERMINAL_SQL, Base, Setting, utcnow
 from handoff.errors import DatabaseInitError
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 REQUIRED_TABLES = frozenset(
     {"devices", "files", "transfers", "transfer_files", "settings", "audit_logs"}
 )
 
 Migration = Callable[[Connection], None]
-MIGRATIONS: dict[int, Migration] = {}
+
+
+def _v1_to_v2(conn: Connection) -> None:
+    """ADR-063: one active transfer per peer instead of one in the whole app. Data is untouched."""
+    conn.execute(text("DROP INDEX IF EXISTS uq_transfers_one_active"))
+    conn.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_transfers_one_active_per_peer "
+            f"ON transfers ({ACTIVE_PEER_EXPRESSION}) WHERE status NOT IN {TERMINAL_SQL}"
+        )
+    )
+
+
+MIGRATIONS: dict[int, Migration] = {1: _v1_to_v2}
 
 
 def _read_version(conn: Connection) -> int | None:

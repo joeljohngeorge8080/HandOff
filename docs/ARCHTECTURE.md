@@ -41,7 +41,7 @@ The architecture must:
 1. Run as a native desktop application.
 2. Support Windows and Linux.
 3. Work over the same local Wi-Fi network.
-4. Support exactly one connected peer at a time.
+4. Support up to 4 connected peers at a time (ADR-063).
 5. Support bidirectional file transfer.
 6. Transfer multiple files as one transfer job.
 7. Support files under 50 MB.
@@ -384,7 +384,7 @@ The Device ID is the logical identity of the device.
 
 # 11. Connection Model
 
-Phase 1 supports exactly **one connected peer at a time**.
+HandOff supports up to **4 connected peers at a time**, one active transfer per peer (ADR-063; supersedes ADR-046).
 
 Example:
 

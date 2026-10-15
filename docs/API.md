@@ -259,7 +259,7 @@ connected
 offline
 ```
 
-Phase 1 permits exactly one connected peer.
+Up to `MAX_CONNECTED_PEERS` (4) peers may be connected at once (ADR-063). The local connection snapshot is `{"connected": bool, "devices": [Device], "device": Device|null}`; `device` is the first connected device, kept for compatibility.
 
 ---
 
@@ -286,7 +286,7 @@ The request carries the **initiator's** own identity. It must be signed (see §4
 `port` is the port on which the initiator's own peer API listens, so the peer can reach it back.
 `public_key` must be the raw 32-byte Ed25519 key, base64-encoded. If the device ID is already known, the key must match the stored one; a changed key is rejected (`DEVICE_NOT_TRUSTED`).
 
-If this device is already connected to a *different* device that is online, the request is rejected with `DEVICE_ALREADY_CONNECTED`.
+If this device already has `MAX_CONNECTED_PEERS` online peers and the caller is not one of them, the request is rejected with `DEVICE_LIMIT_REACHED` (409). An offline peer's slot is reclaimed. Local IPC changes (ADR-063): `drop.send` returns `{"transfer": <first>, "transfers": [...], "skipped": [{"device_id", "device_name", "reason"}]}` (`transfer` is kept for single-device callers; `reason` is `busy`, `offline` or `unreachable`); `status.snapshot` adds `active_transfers[]` (`active_transfer` is the first); a peer with a non-terminal transfer with this device rejects another with `INVALID_STATE`. `POST /api/v1/handoff/claim` is answered only to the claimant.
 
 ### Response
 
@@ -975,7 +975,7 @@ The following codes should be used consistently.
 ```text
 DEVICE_NOT_FOUND
 DEVICE_OFFLINE
-DEVICE_ALREADY_CONNECTED
+DEVICE_LIMIT_REACHED
 PEER_CONNECTION_FAILED
 INVALID_DEVICE_ID
 ```

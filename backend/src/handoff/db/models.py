@@ -18,7 +18,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-_TERMINAL_SQL = "('completed','failed','partially_completed')"
+TERMINAL_SQL = "('completed','failed','partially_completed')"
+ACTIVE_PEER_EXPRESSION = "COALESCE(source_device_id, destination_device_id)"
 
 
 def utcnow() -> datetime:
@@ -115,12 +116,13 @@ class Transfer(Base):
         Index("ix_transfers_created_at", "created_at"),
         Index("ix_transfers_source_device_id", "source_device_id"),
         Index("ix_transfers_destination_device_id", "destination_device_id"),
-        # DATABASE §44 / ADR-015: at most one non-terminal transfer exists at any time.
+        # DATABASE §44 / ADR-015 as amended by ADR-063: at most one non-terminal transfer per
+        # peer, in either direction (a sent row has no source, a received row no destination).
         Index(
-            "uq_transfers_one_active",
-            text("1"),
+            "uq_transfers_one_active_per_peer",
+            text(ACTIVE_PEER_EXPRESSION),
             unique=True,
-            sqlite_where=text(f"status NOT IN {_TERMINAL_SQL}"),
+            sqlite_where=text(f"status NOT IN {TERMINAL_SQL}"),
         ),
     )
 

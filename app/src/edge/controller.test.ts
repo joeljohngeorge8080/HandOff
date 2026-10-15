@@ -48,6 +48,22 @@ describe("EdgeController", () => {
     expect(modes).toContain("stage");
   });
 
+  it("adopts every transfer of a drop that went to several devices, and the skipped ones", async () => {
+    const core = vi.fn(async () => ({
+      transfer: transfer({ transfer_id: "a" }),
+      transfers: [transfer({ transfer_id: "a" }), transfer({ transfer_id: "b" })],
+      skipped: [{ device_id: "c", device_name: "Cara", reason: "busy" }],
+    }));
+    const { c } = setup(core);
+    const seen: Input[] = [];
+    const dispatch = c.dispatch.bind(c);
+    c.dispatch = (i: Input) => { seen.push(i); dispatch(i); };
+    c.dispatch(drop());
+    await tick();
+    expect(seen).toContainEqual({ type: "sent", transferId: "a", transferIds: ["a", "b"], skipped: ["Cara"] });
+    expect(c.state.view).toMatchObject({ kind: "sending", ids: ["a", "b"] });
+  });
+
   it("never reports success from the send reply alone", async () => {
     const { c } = setup(async () => ({ transfer: transfer({ status: "created" }) }));
     c.dispatch(drop());

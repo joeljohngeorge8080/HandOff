@@ -94,6 +94,7 @@ def config_max():
 
 def make(files=("/data/a.png",), send_error=None, read_error=None, claim_error=None, active=PEER):
     bus, seen, sent, claims, clock, sched = EventBus(), [], [], [], Clock(), Sched()
+    recipients: list[str] = []
     bus.subscribe(lambda n, d: seen.append((n, d)))
 
     def read():
@@ -101,10 +102,11 @@ def make(files=("/data/a.png",), send_error=None, read_error=None, claim_error=N
             raise read_error
         return list(files)
 
-    def send(paths):
+    def send(paths, to):
         if send_error:
             raise send_error
         sent.append(paths)
+        recipients.append(to)
         return {"transfer": {"transfer_id": "t1"}}
 
     def claim():
@@ -112,8 +114,9 @@ def make(files=("/data/a.png",), send_error=None, read_error=None, claim_error=N
             raise claim_error
         claims.append(1)
 
-    bridge = CopyBridge(bus, send, claim, lambda: active, read, clock, schedule=sched)
+    bridge = CopyBridge(bus, send, claim, lambda who: who == active, read, clock, schedule=sched)
     bridge.sched = sched  # type: ignore[attr-defined]
+    bridge.recipients = recipients  # type: ignore[attr-defined]
     return bridge, seen, sent, claims, clock
 
 
@@ -391,9 +394,9 @@ def make_held(files=("/data/a.png",), image=None):
 
     b = CopyBridge(
         bus,
-        lambda paths: sent.append(paths) or {"transfer": {"transfer_id": "t1"}},
+        lambda paths, to: sent.append(paths) or {"transfer": {"transfer_id": "t1"}},
         lambda: None,
-        lambda: PEER,
+        lambda who: who == PEER,
         lambda: list(files),
         clock,
         read_image=lambda: image,
@@ -526,8 +529,29 @@ def test_the_temporary_picture_is_removed_when_the_grab_is_cancelled_replaced_or
 
 def test_the_temporary_picture_is_removed_even_when_the_send_is_refused():
     b, _, _, _, discarded, _ = make_held(files=(), image=PNG)
-    b._send = lambda p: (_ for _ in ()).throw(HandOffError("FILE_TYPE_NOT_SUPPORTED", "x"))
+    b._send = lambda p, to: (_ for _ in ()).throw(HandOffError("FILE_TYPE_NOT_SUPPORTED", "x"))
     b.on_grab()
     with pytest.raises(HandOffError):
         b.serve_claim(PEER)
     assert discarded == ["/data/held/image-1.png"]
+
+
+# ----- several connected peers (ADR-063) -------------------------------------------------
+
+
+def test_a_claim_sends_the_held_files_to_the_claimant_only():
+    b, _seen, sent, _claims, _ = make()
+    b.on_grab()
+    assert b.serve_claim(PEER) == {"transfer_id": "t1"}
+    assert sent == [["/data/a.png"]] and b.recipients == [PEER]
+
+
+def test_any_connected_peer_may_claim_but_the_grab_still_sends_only_once():
+    other = "22222222-2222-4222-8222-222222222222"
+    b, _seen, sent, _claims, _ = make()
+    b._is_peer = lambda who: who in (PEER, other)
+    b.on_grab()
+    b.serve_claim(other)
+    with pytest.raises(HandOffError) as e:
+        b.serve_claim(PEER)
+    assert e.value.code == "NOTHING_HELD" and b.recipients == [other] and len(sent) == 1

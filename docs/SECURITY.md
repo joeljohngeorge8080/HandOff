@@ -833,13 +833,13 @@ The receiver should limit:
 - Maximum file size
 - Invalid requests from a device
 
-Since Phase 1 supports only one active transfer:
+Since at most one transfer per peer may be active (ADR-063):
 
 ```text
-Active transfers = 1
+Active transfers per peer = 1
 ```
 
-Any additional request should be rejected or deferred.
+Any additional request from the same peer is rejected. Disk checks count bytes already promised to other in-flight incoming transfers.
 
 ---
 
@@ -1190,7 +1190,7 @@ Claude Code must follow these principles:
 14. Always enforce the 50 MB limit.
 15. Always verify SHA-256 integrity.
 16. Maintain audit logs for security failures.
-17. Keep only one active transfer in Phase 1.
+17. Keep only one active transfer per peer (ADR-063).
 18. Do not introduce user accounts or cloud authentication.
 19. Do not add antivirus functionality to Phase 1.
 20. Do not sacrifice security merely to simplify the implementation.

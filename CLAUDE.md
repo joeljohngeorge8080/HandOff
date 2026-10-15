@@ -11,7 +11,7 @@ peer-to-peer transfer engine. Phase 2 replaced the gallery UI with the edge drop
 another input mechanism later and must never become the foundation.**
 
 ## Phase 2 (Edge Transfer UX) — current product (ADR-054/055; supersedes conflicting Phase 1 rules below)
-- The gallery, Send button and Receive Mode are **gone**. HandOff is a thin always-on-top **right-edge** strip: drag files from the OS to the edge, release, and they go to the **one connected trusted peer**. No peer → reject ("No HandOff device connected"); never queue.
+- The gallery, Send button and Receive Mode are **gone**. HandOff is a thin always-on-top **right-edge** strip: drag files from the OS to the edge, release, and they go to **every connected trusted peer** (up to 4, ADR-063). No peer → reject ("No HandOff device connected"); never queue.
 - Allowed types: `.txt .jpg .jpeg .png .pdf` (case-insensitive, ≤ 50 MB). `.exe`/`.mp4` removed. Reject folders, symlinks/shortcuts, non-regular files, and executables renamed to an allowed extension (PE `MZ` / ELF header) — on **both** sender and receiver. A drop is **all-or-nothing**.
 - Pipeline is unchanged: `drop.send` → `files.import` (copy + SHA-256) → `transfer.create` (file IDs) → existing signed TLS protocol. Dropped managed copies are logically deleted when the transfer is terminal; orphans are swept at startup.
 - **Receiver chooses where files land**: setting `receive_directory` (default OS Desktop via `platformdirs`), picked with the native folder dialog. Validated by the receiver only (absolute, existing, writable, outside HandOff's data dir). Never from the network. Files are written with exclusive create (`name(1).ext`, never overwrite) and re-hashed during the copy. Received files are **not** managed storage (no `files` row; `transfer_files.file_id` NULL).
@@ -28,15 +28,15 @@ another input mechanism later and must never become the foundation.**
 - Importing **copies** the file into app storage. Never touch the original.
 - Gallery shows icon + name. Selection supports single click, Ctrl, Shift, and drag-select.
 - Deleting a file is a logical delete of HandOff's managed copy. The user's original is never touched.
-- Discover devices with mDNS. Each install has a persistent device ID. Many devices can be discovered, but there is **exactly one connected peer** at a time (ADR-046). Connections are bidirectional.
-- There is **no Disconnect button**. Choosing another device does an internal graceful disconnect, then connects to the new one (ADR-047). **During an active transfer, reject the switch** until the transfer reaches `completed`, `failed` or `partially_completed`. Never interrupt a transfer silently.
+- Discover devices with mDNS. Each install has a persistent device ID. Many devices can be discovered; up to **4 can be connected** at a time (ADR-063, supersedes ADR-046). Connections are bidirectional.
+- There is **no Disconnect button**. Connecting a device adds it (ADR-063, supersedes ADR-047); when 4 online peers are connected, Connect is refused with `DEVICE_LIMIT_REACHED` (an offline slot is reclaimed). Never interrupt a transfer silently.
 - Detect when the peer goes offline.
 - Receive Mode toggle (ON/OFF):
   - It can be turned ON with no peer connected, and its state persists across restarts.
   - ON + trusted peer means transfers are auto-accepted, with no per-file prompt.
   - OFF means transfers are rejected with `RECEIVE_MODE_DISABLED`.
 - Send is enabled only when ≥1 file is selected AND a peer is connected. The UI must show the destination explicitly.
-- Multiple files go out as **one transfer job** packaged in a temporary ZIP. Transfers use copy semantics. Only **one active transfer** at a time, and transfers can't be cancelled.
+- Multiple files go out as **one transfer job** packaged in a temporary ZIP. Transfers use copy semantics. Only **one active transfer per peer** (parallel across peers, ADR-063), and transfers can't be cancelled.
 - Name collisions get `photo(1).jpg`, `photo(2).jpg`, and so on. Never overwrite. Identical content is still copied (no dedup).
 - Transfer history persists, and the user can configure how long it is kept. Desktop notifications fire for completed, received, and failed transfers.
 - Leave a CV integration boundary in place, defined but **not enabled**.
@@ -148,7 +148,7 @@ Tauri UI ──IPC──► Python Core (File/Device/Discovery/Connection/Transf
 
 ## Phase 3 (CV) boundaries — beyond ADR-056, do NOT build yet
 (Allowed since ADR-056: camera, OpenCV, MediaPipe, hand detection, gesture recognition, hand-controlled pointer and gesture drag/drop, in the form described under Phase 2/3 above.)
-Still out: spatial targeting, multiple simultaneous peers, Internet/WAN
+Still out: spatial targeting, per-device drop targets, Internet/WAN
 transfer, cloud storage or sync, mobile apps, files over 50 MB, transfer cancellation,
 user accounts, a disconnect/untrust UI, auto-update, code
 signing, and antivirus. "It would be cool if…" doesn't expand scope (REQUIREMENTS §32).
@@ -162,7 +162,7 @@ ADR-001 Tauri + Python (not Electron or web) · 002/003 P2P, LAN-only, no server
 015 one active transfer · 016 multiple files = one job · 017 50 MB · 018 four file types ·
 019 SHA-256 · 020/042 never overwrite · 022 separate app storage · 023 logical delete ·
 024/025 audit logs never deleted · 026 no AV · 027 no firewall management · 033 CV in Phase 3 (amended by 054) ·
-046 one peer · 047 switch = internal disconnect, blocked during an active transfer · 048 `public_key` + `is_trusted` ·
+046/047 superseded by 063 (up to 4 peers, one active transfer per peer) · 048 `public_key` + `is_trusted` ·
 049 hash at import · 050 transfer takes file IDs · 051 manifest with SHA-256 · 052 canonical CV events.
 To change any ADR, follow ADR-045: name the ADR, give the reason and the replacement,
 update the docs. **Never change architecture silently.**
@@ -195,7 +195,7 @@ update the docs. **Never change architecture silently.**
 7. Never send peer traffic in plaintext or skip identity verification.
 8. Never report `completed` before full receipt, validation, SHA-256 verification, final storage, and the DB update.
 9. Never store binaries in SQLite. Never let UI code touch the DB or peer APIs.
-10. Never allow more than one active transfer or more than one connected peer. Never switch peers during an active transfer.
+10. Never allow more than one active transfer per peer or more than 4 connected peers (ADR-063).
 11. Never accept file hashes from the client or frontend. The stored hash computed at import is authoritative.
 12. Never delete audit logs or history as a side effect of file deletion. Never silently destroy DB data during schema changes.
 13. Never log, transmit, commit, or ship private keys or secrets. Each install generates its own identity.

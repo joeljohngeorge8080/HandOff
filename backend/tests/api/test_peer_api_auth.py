@@ -204,27 +204,23 @@ def test_a_device_whose_key_changed_cannot_reconnect(h):
         )
 
 
-def test_only_one_peer_can_be_connected_at_a_time(h):
+def test_a_second_peer_can_connect_while_the_first_is_online(h):
     assert h.connect(h.alice).status_code == 200
-    r = h.connect(h.bob)
-    assert r.status_code == 409 and err(r) == "DEVICE_ALREADY_CONNECTED"
-    with h.core.db.session() as s:
-        assert DeviceRepository(s).get_by_device_id(h.bob.device_id) is None  # not even recorded
-
-
-def test_another_peer_may_connect_once_the_first_is_offline(h):
-    h.connect(h.alice)
-    h.connections._active.status = "offline"
     assert h.connect(h.bob).status_code == 200
-    assert h.connections.snapshot()["device"]["device_id"] == h.bob.device_id
-    with h.core.db.session() as s:  # alice stays trusted (trust is persistent)
-        assert DeviceRepository(s).get_by_device_id(h.alice.device_id).is_trusted
+    assert {d["device_id"] for d in h.connections.snapshot()["devices"]} == {
+        h.alice.device_id,
+        h.bob.device_id,
+    }
 
 
 def test_release_clears_the_active_peer_but_keeps_trust(h):
     h.connect()
     assert h.call("DELETE", "/api/v1/connection").json() == {"status": "released"}
-    assert h.call("GET", "/api/v1/connection").json() == {"connected": False, "device": None}
+    assert h.call("GET", "/api/v1/connection").json() == {
+        "connected": False,
+        "devices": [],
+        "device": None,
+    }
     with h.core.db.session() as s:
         assert DeviceRepository(s).get_by_device_id(h.alice.device_id).is_trusted
 
@@ -234,6 +230,7 @@ def test_other_devices_cannot_release_someone_elses_connection(h):
     trust(h, h.bob)
     h.call("DELETE", "/api/v1/connection", who=h.bob)
     assert h.connections.snapshot()["device"]["device_id"] == h.alice.device_id
+    assert h.connections.is_connected(h.alice.device_id)
 
 
 @pytest.mark.parametrize(

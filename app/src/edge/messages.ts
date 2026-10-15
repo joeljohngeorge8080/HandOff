@@ -34,6 +34,10 @@ export const MESSAGES = {
   holding: (count: number): string => `Holding ${count} ${count === 1 ? "file" : "files"}`,
   failed: "Transfer failed",
   partial: "Some files failed",
+  /** A drop to several devices that reached only some of them. */
+  partialSend: (done: number, total: number): string => `Sent to ${done} of ${total} devices`,
+  /** A device that was left out of a drop (ADR-063). */
+  skippedBusy: (names: readonly string[]): string => `Not sent to ${names.join(", ")}: busy with another transfer`,
 } as const;
 
 export const sendingTo = (device: string): string => `Sending to ${device}`;

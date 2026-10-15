@@ -20,11 +20,31 @@ log = logging.getLogger(__name__)
 class Database:
     def __init__(self, engine: Engine) -> None:
         self.engine = engine
+        self._immediate = engine.execution_options(handoff_immediate=True)
 
     @contextmanager
     def session(self) -> Iterator[Session]:
         """One short transaction: commit on success, roll back on any error."""
-        s = Session(self.engine, expire_on_commit=False)
+        with self._open(self.engine) as s:
+            yield s
+
+    @contextmanager
+    def write_session(self) -> Iterator[Session]:
+        """Like `session`, but takes the write lock when the transaction begins.
+
+        Use it where a transaction reads and then writes while other threads write too (the
+        parallel transfers of ADR-063). A deferred transaction cannot be upgraded to a writer
+        once another writer has committed; SQLite then fails at once with "database is locked",
+        whatever the busy timeout. Do not open another session inside one: it would wait for
+        this one's lock.
+        """
+        with self._open(self._immediate) as s:
+            yield s
+
+    @staticmethod
+    @contextmanager
+    def _open(engine: Engine) -> Iterator[Session]:
+        s = Session(engine, expire_on_commit=False)
         try:
             yield s
             s.commit()
@@ -52,7 +72,8 @@ def _configure(engine: Engine) -> None:
 
     @event.listens_for(engine, "begin")
     def _on_begin(conn: Connection) -> None:
-        conn.exec_driver_sql("BEGIN")
+        immediate = conn.get_execution_options().get("handoff_immediate")
+        conn.exec_driver_sql("BEGIN IMMEDIATE" if immediate else "BEGIN")
 
 
 def open_database(paths: AppPaths) -> Database:

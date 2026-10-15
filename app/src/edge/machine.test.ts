@@ -239,8 +239,8 @@ describe("sending follows the core, never the other way round", () => {
 describe("returning to idle", () => {
   it("success, failure and refusals all return to idle on their own timer and shrink the window", () => {
     const cases: Input[][] = [
-      [drop(1), { type: "transfer", transfer: tr({ status: "completed" }) }],
-      [drop(1), { type: "transfer", transfer: tr({ status: "failed" }) }],
+      [drop(1), { type: "sent", transferId: "tr_1" }, { type: "transfer", transfer: tr({ status: "completed" }) }],
+      [drop(1), { type: "sent", transferId: "tr_1" }, { type: "transfer", transfer: tr({ status: "failed" }) }],
       [drop(1), { type: "send_failed", code: "INTERNAL_ERROR", message: "x" }],
       [{ type: "transfer", transfer: tr({ direction: "received", status: "completed" }) }],
     ];
@@ -257,7 +257,7 @@ describe("returning to idle", () => {
     expect(kind(run(a.model, { type: "timer", token: sched.token }).model)).toBe("idle");
   });
   it("a stale timer cannot interrupt a newer view", () => {
-    const a = run(withPeer(), drop(1), { type: "transfer", transfer: tr({ status: "failed" }) });
+    const a = run(withPeer(), drop(1), { type: "sent", transferId: "tr_1" }, { type: "transfer", transfer: tr({ status: "failed" }) });
     const oldToken = (of(a.effects, "schedule").at(-1) as Extract<Effect, { type: "schedule" }>).token;
     const b = run(a.model, { type: "timer", token: oldToken }, drop(1), { type: "sent", transferId: "tr_2" });
     expect(kind(b.model)).toBe("sending");
@@ -477,7 +477,7 @@ describe("what the hand is holding", () => {
     expect(kind(model)).toBe("sending");
   });
   it("a grab that was held while a transfer finished comes back after the result", () => {
-    const a = run(withPeer(), drop(1), held(["a.png"]), { type: "transfer", transfer: tr({ status: "completed" }) });
+    const a = run(withPeer(), drop(1), { type: "sent", transferId: "tr_1" }, held(["a.png"]), { type: "transfer", transfer: tr({ status: "completed" }) });
     const sched = of(a.effects, "schedule").at(-1) as Extract<Effect, { type: "schedule" }>;
     expect(kind(a.model)).toBe("send_success");
     expect(kind(run(a.model, { type: "timer", token: sched.token }).model)).toBe("holding");
@@ -485,5 +485,91 @@ describe("what the hand is holding", () => {
   it("labels it by count", () => {
     expect(labelFor({ kind: "holding", names: ["a.png"], count: 1 }, null)).toBe("Holding 1 file");
     expect(labelFor({ kind: "holding", names: ["a", "b"], count: 12 }, null)).toBe("Holding 12 files");
+  });
+});
+
+
+describe("several connected peers (ADR-063)", () => {
+  const two = (): Model => ({ ...withPeer("2 devices"), peerCount: 2 });
+  const batch = (m: Model = two(), skipped: string[] = []) =>
+    run(m, drop(1), { type: "sent", transferId: "a", transferIds: ["a", "b"], skipped });
+  const upd = (id: string, status: string, bytes = 0): Input => ({
+    type: "transfer",
+    transfer: tr({ transfer_id: id, status, bytes_transferred: bytes, peer_device_name: id === "a" ? "Aaron" : "Bea" }),
+  });
+
+  it("a drop to two devices is a success only when BOTH transfers completed", () => {
+    const a = run(batch().model, upd("a", "completed"));
+    expect(kind(a.model)).toBe("sending");
+    const b = run(a.model, upd("b", "completed"));
+    expect(kind(b.model)).toBe("send_success");
+    expect(labelFor(b.model.view, null)).toBe("Transfer complete");
+  });
+  it("one completed and one failed is a partial failure that names the count", () => {
+    const { model } = run(batch().model, upd("a", "completed"), upd("b", "failed"));
+    expect(model.view).toMatchObject({ kind: "send_failed", message: "Sent to 1 of 2 devices" });
+  });
+  it("every transfer failing is a plain failure", () => {
+    const { model } = run(batch().model, upd("a", "failed"), upd("b", "failed"));
+    expect(model.view).toMatchObject({ kind: "send_failed", message: "Transfer failed" });
+  });
+  it("progress is the average of the transfers", () => {
+    const { model } = run(batch().model, upd("a", "transferring", 500), upd("b", "transferring", 0));
+    expect((model.view as Extract<View, { kind: "sending" }>).progress).toBeCloseTo(0.25);
+  });
+  it("a transfer that finished before the send reply arrived cannot end the drop early", () => {
+    const early = run(two(), drop(1), upd("a", "completed"));
+    expect(kind(early.model)).toBe("sending");
+    const still = run(early.model, { type: "sent", transferId: "a", transferIds: ["a", "b"] });
+    expect(kind(still.model)).toBe("sending"); // b has not finished
+    expect(kind(run(still.model, upd("b", "completed")).model)).toBe("send_success");
+  });
+  it("a reply whose transfers all finished already settles at once", () => {
+    const early = run(two(), drop(1), upd("a", "completed"), upd("b", "completed"));
+    expect(kind(early.model)).toBe("sending");
+    expect(kind(run(early.model, { type: "sent", transferId: "a", transferIds: ["a", "b"] }).model)).toBe("send_success");
+  });
+  it("ignores transfers that are not part of this drop", () => {
+    const { model } = run(batch().model, upd("zzz", "completed"));
+    expect(kind(model)).toBe("sending");
+    expect((model.view as Extract<View, { kind: "sending" }>).parts).not.toHaveProperty("zzz");
+  });
+  it("tells the user which device was skipped because it was busy", () => {
+    const a = batch(two(), ["Bea"]);
+    const done = run(a.model, upd("a", "completed"), upd("b", "completed"));
+    expect(of(done.effects, "notify")).toContainEqual({ type: "notify", title: "HandOff", body: "Not sent to Bea: busy with another transfer" });
+    expect(kind(done.model)).toBe("send_success");
+  });
+  it("is busy only when every connected device already has a transfer", () => {
+    const one = run(two(), upd("a", "transferring"));
+    expect(one.model.busy).toBe(false);
+    const both = run(one.model, { type: "transfer", transfer: tr({ transfer_id: "c", direction: "received", status: "transferring" }) });
+    expect(both.model.busy).toBe(true);
+    const freed = run(both.model, upd("a", "completed"));
+    expect(freed.model.busy).toBe(false);
+  });
+  it("a drag is refused only while every device is busy", () => {
+    const m: Model = { ...two(), active: ["x", "y"], busy: true };
+    expect(run(m, drag()).model.view).toMatchObject({ kind: "rejected", reason: "busy" });
+    expect(kind(run({ ...two(), active: ["x"], busy: false }, drag()).model)).toBe("validating");
+  });
+  it("a snapshot restores the peer count and every running transfer", () => {
+    const { model } = run(initialModel(), {
+      type: "snapshot", peer: "2 devices", count: 2,
+      active: tr({ transfer_id: "a", status: "transferring" }),
+      actives: [tr({ transfer_id: "a", status: "transferring" }), tr({ transfer_id: "b", direction: "received", status: "transferring" })],
+    });
+    expect(model.peerCount).toBe(2);
+    expect(model.active.sort()).toEqual(["a", "b"]);
+    expect(model.busy).toBe(true);
+  });
+  it("a connection change updates the count and the label", () => {
+    const { model } = run(withPeer(), { type: "connection", peer: "3 devices", count: 3 });
+    expect(model.peer).toBe("3 devices");
+    expect(model.peerCount).toBe(3);
+  });
+  it("single-device behaviour is unchanged: the count defaults from the label", () => {
+    expect(run(initialModel(), { type: "connection", peer: "A" }).model.peerCount).toBe(1);
+    expect(run(withPeer(), { type: "connection", peer: null }).model.peerCount).toBe(0);
   });
 });

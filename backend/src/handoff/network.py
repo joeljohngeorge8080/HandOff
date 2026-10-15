@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import socket
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from handoff.config import (
@@ -18,7 +19,7 @@ from handoff.core import Core
 from handoff.cv.copy_bridge import CopyBridge
 from handoff.cv.stash import PictureStash
 from handoff.devices.client import PeerClient, error_from_response
-from handoff.devices.connection import ConnectionManager
+from handoff.devices.connection import ActivePeer, ConnectionManager
 from handoff.devices.discovery import (
     Advertisement,
     DiscoveredPeer,
@@ -103,15 +104,15 @@ class Network:
         stash = PictureStash(core.paths.temp_dir / "held")
         bridge = CopyBridge(
             core.events,
-            self.drops.send,
-            self._claim_from_peer,
-            lambda: peer.device_id if (peer := self.connections.active_peer()) else None,
+            self.drops.send_to,
+            self._claim_from_peers,
+            self.connections.is_connected,
             stash=stash.save,
             discard=stash.discard,
         )
         core.hand_control.on_grab, core.hand_control.on_release = bridge.on_grab, bridge.on_release
-        self.connections.on_offline = lambda: self.sender.abort_active(
-            "DEVICE_OFFLINE", "The device went offline."
+        self.connections.on_offline = lambda device_id: self.sender.abort_peer(
+            device_id, "DEVICE_OFFLINE", "The device went offline."
         )
         app = create_app(
             PeerContext(
@@ -136,17 +137,35 @@ class Network:
         self._expiry.start()
         log.info("Peer API listening on https://%s:%s", self.host, self.port)
 
-    def _claim_from_peer(self) -> None:
-        """Ask the connected device to send what its hand is holding (ADR-058)."""
-        peer = self.connections.active_peer()
-        if peer is None:
-            raise HandOffError("DEVICE_NOT_FOUND", "No HandOff device connected")
+    def _claim_from_peer(self, peer: ActivePeer) -> None:
         address, port = peer.endpoint()
         resp = self.client.request(
             address, port, "POST", "/api/v1/handoff/claim", expected_key=peer.public_key, json={}
         )
         if resp.status_code != 202:
             raise error_from_response(resp)
+
+    def _claim_from_peers(self) -> None:
+        """Ask every connected device to send what its hand is holding (ADR-058, ADR-063).
+
+        Only a device that really holds a grab answers 202; the others say nothing is held.
+        The claim succeeds if any of them sends.
+        """
+        peers = self.connections.connected_peers()
+        if not peers:
+            raise HandOffError("DEVICE_NOT_FOUND", "No HandOff device connected")
+        errors: list[HandOffError] = []
+
+        def ask(peer: ActivePeer) -> None:
+            try:
+                self._claim_from_peer(peer)
+            except HandOffError as exc:
+                errors.append(exc)
+
+        with ThreadPoolExecutor(max_workers=len(peers), thread_name_prefix="claim") as pool:
+            list(pool.map(ask, peers))
+        if len(errors) == len(peers):
+            raise errors[0]
 
     def stop(self) -> None:
         """Stop everything that was started; one failing part must not stop the rest."""

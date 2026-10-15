@@ -7,7 +7,7 @@ from handoff.peer_api.errors import HTTP_STATUS, status_for
 API_CODES = [
     "DEVICE_NOT_FOUND",
     "DEVICE_OFFLINE",
-    "DEVICE_ALREADY_CONNECTED",
+    "DEVICE_LIMIT_REACHED",
     "PEER_CONNECTION_FAILED",
     "INVALID_DEVICE_ID",
     "RECEIVER_NOT_READY",

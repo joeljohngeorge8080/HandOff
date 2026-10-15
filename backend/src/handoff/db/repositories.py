@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -147,8 +147,12 @@ class TransferRepository:
         try:
             self.s.flush()
         except IntegrityError as exc:
-            if "uq_transfers_one_active" in str(exc.orig):
-                raise HandOffError("INVALID_STATE", "Another transfer is already active.") from exc
+            if "uq_transfers_one_active_per_peer" in str(exc.orig) or "transfers.1" in str(
+                exc.orig
+            ):
+                raise HandOffError(
+                    "INVALID_STATE", "A transfer with this device is already in progress."
+                ) from exc
             raise
         return transfer
 
@@ -159,9 +163,28 @@ class TransferRepository:
         return self.s.scalar(stmt)
 
     def get_active(self) -> Transfer | None:
+        """Any one active transfer (callers that only ask "is anything running?")."""
+        return next(iter(self.list_active()), None)
+
+    def list_active(self) -> list[Transfer]:
         stmt = (
             select(Transfer)
             .where(Transfer.status.not_in(_TERMINAL_VALUES))
+            .order_by(Transfer.created_at)
+            .options(selectinload(Transfer.files))
+        )
+        return list(self.s.scalars(stmt))
+
+    def get_active_for_peer(self, device_id: str) -> Transfer | None:
+        stmt = (
+            select(Transfer)
+            .where(
+                Transfer.status.not_in(_TERMINAL_VALUES),
+                or_(
+                    Transfer.source_device_id == device_id,
+                    Transfer.destination_device_id == device_id,
+                ),
+            )
             .options(selectinload(Transfer.files))
         )
         return self.s.scalar(stmt)

@@ -328,7 +328,7 @@ Implicitly selecting a destination could result in accidental transfers.
 
 # ADR-015: One Active Transfer
 
-**Status:** Accepted
+**Status:** Accepted (amended by ADR-063: one active transfer per peer)
 
 **Decision:** Phase 1 permits only one active transfer job at a time.
 
@@ -956,7 +956,7 @@ Do not silently change architecture.
 
 # ADR-046: Single Connected Peer in Phase 1
 
-**Status:** Accepted
+**Status:** Superseded by ADR-063
 
 Phase 1 supports exactly **one connected peer at a time**.
 
@@ -988,7 +988,7 @@ If a future requirement needs multi-peer support, it is an architectural change:
 
 # ADR-047: Switching Connected Peers
 
-**Status:** Accepted
+**Status:** Superseded by ADR-063
 
 Phase 1 does not expose a manual **Disconnect** button.
 
@@ -1350,6 +1350,30 @@ The user asked for a gesture that copies a selected file and sends it. A pure-CV
 3. **Nothing else moves.** A new grab during the grace replaces the old one and drops its cancel. Expiry (20 s) is unchanged. More open palms during the grace do not add cancels or claims. After the grace, `copy_cancelled` is published and the held display clears, as before.
 
 **Accepted cost:** cancelling on the grabbing laptop shows up to 1 s later.
+
+---
+
+# ADR-063: Several Connected Peers, One Active Transfer per Peer
+
+**Status:** Accepted
+
+**Supersedes (ADR-045):** ADR-046 (exactly one connected peer) and ADR-047 (switching peers, blocked during a transfer).
+**Amends (ADR-045):** ADR-015 (one active transfer at a time), ADR-054 decision 3 (a drop goes to the one peer), ADR-058 (a claim reaches one peer).
+
+**Why:** a user with more than two laptops needs them all connected at once, each able to send and receive, without the devices blocking or corrupting each other.
+
+**Decisions:**
+
+1. **Up to `MAX_CONNECTED_PEERS` (4) connected trusted peers.** Clicking Connect on a device *adds* it; nothing is disconnected and nothing is blocked by a running transfer. When all slots hold online peers, Connect (and an inbound connection from a new device) is refused with `DEVICE_LIMIT_REACHED` (409). An *offline* peer's slot is reclaimed to make room. Trust (ADR-048) is unchanged: a device is trusted only by an explicit Connect.
+2. **One active transfer per peer, any direction.** A peer may have at most one non-terminal transfer with this device (sent or received). Different peers transfer in parallel. This is enforced by the database (partial unique index on the peer id of non-terminal transfers, schema version 2), not only in memory. A second transfer with a busy peer is rejected with `INVALID_STATE`.
+3. **A drop is sent to every connected, online peer.** The files are validated once (all-or-nothing, ADR-054) and imported once, then one transfer per peer is created through the unchanged protocol. A peer that is busy with this device is skipped and reported; if no peer can take the drop it is rejected. With no connected peer the rule is unchanged ("No HandOff device connected").
+4. **A claim reaches every connected peer; the holder answers only the claimant.** Laptop 2 asks all its connected peers for a held grab. Only a peer that actually holds one sends, and only to the device that claimed it (ADR-058 otherwise unchanged).
+5. **Failures are isolated.** A peer going offline aborts only its own transfers. Disk-space checks count bytes already promised to other in-flight incoming transfers. Names never collide (exclusive create, `name(1).ext`); every transfer keeps its own id, temp archive and work directory.
+6. **The UI reports honestly.** A drop is a success only when every transfer it started is backend-`completed`; otherwise the result names how many succeeded.
+
+**Unchanged:** no Disconnect or untrust UI, LAN only, TLS identity verification, 50 MB / four-type limits, never overwrite, the CV worker never calls transfer APIs.
+
+**Accepted cost:** a broadcast drop cannot target a single device (a per-device drop target is a later decision). Sending the same files to N peers reads them N times.
 
 ---
 

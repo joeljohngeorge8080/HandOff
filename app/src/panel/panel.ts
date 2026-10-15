@@ -6,7 +6,7 @@
 // destination; nothing here, and nothing from the network, supplies a path to write to).
 import { el } from "../dom";
 import { handControlLabel } from "../input/cv";
-import { canSwitchPeer, formatBytes, shortenPath } from "../rules";
+import { MAX_CONNECTED_PEERS, connectedPeerCount, formatBytes, peerLimitReached, shortenPath } from "../rules";
 import type { HandControl, Peer, Snapshot, Transfer } from "../types";
 
 export interface PanelDeps {
@@ -104,37 +104,46 @@ export class Panel {
   private render(): void {
     const snap = this.snapshot;
     const conn = snap?.connection;
-    const active = snap?.active_transfer ?? null;
     const head = el("div", { class: "row" }, el("h1", { text: snap?.device.device_name ?? "HandOff" }));
     const closeBtn = el("button", { class: "close", text: "×", title: "Close" });
     closeBtn.addEventListener("click", () => this.close());
     head.append(closeBtn);
 
+    const devices = conn?.devices ?? (conn?.device ? [conn.device] : []);
+    const online = connectedPeerCount(conn ?? { connected: false, device: null });
+    const hint =
+      online > 1 ? "Dropped files are sent to every connected device"
+      : online === 1 ? "Dropped files are sent here"
+      : "Choose a device below";
     const peerRow = el("div", { class: "card row" },
-      el("span", { class: `dot ${conn?.device?.status === "connected" ? "on" : conn?.device ? "offline" : ""}` }),
+      el("span", { class: `dot ${online > 0 ? "on" : devices.length > 0 ? "offline" : ""}` }),
       el("div", { class: "grow" },
-        el("div", { text: conn?.device ? conn.device.device_name : "Not connected" }),
-        el("div", { class: "muted", text: conn?.connected ? "Dropped files are sent here" : "Choose a device below" })));
+        el("div", { text: devices.length > 0 ? devices.map((d) => d.device_name).join(", ") : "Not connected" }),
+        el("div", { class: "muted", text: hint })));
 
-    this.root.replaceChildren(head, peerRow, this.devicesSection(active), this.folderSection(snap), this.autoOpenSection(), this.handSection(), this.historySection(snap));
+    this.root.replaceChildren(head, peerRow, this.devicesSection(), this.folderSection(snap), this.autoOpenSection(), this.handSection(), this.historySection(snap));
     if (this.error) this.root.append(el("p", { class: "error", text: this.error }));
     const quit = el("button", { class: "quit", text: "Quit HandOff" });
     quit.addEventListener("click", () => this.deps.quit());
     this.root.append(quit);
   }
 
-  private devicesSection(active: Transfer | null): HTMLElement {
+  private devicesSection(): HTMLElement {
     const box = el("section", {}, el("h2", { text: "Nearby devices" }));
     const list = el("ul", { class: "list" });
-    const current = this.snapshot?.connection.device?.device_id;
+    const conn = this.snapshot?.connection;
+    const connected = new Set(
+      (conn?.devices ?? (conn?.device ? [conn.device] : [])).filter((d) => d.status === "connected").map((d) => d.device_id),
+    );
+    const full = conn ? peerLimitReached(conn) : false;
     if (this.peers.length === 0) list.append(el("li", { class: "muted", text: "No devices found on this network." }));
-    const mayConnect = canSwitchPeer(active);
     for (const p of this.peers) {
-      const isCurrent = current === p.device_id && p.status === "connected";
+      const isCurrent = connected.has(p.device_id) && p.status === "connected";
+      const blocked = full && !isCurrent;
       const btn = el("button", {
         text: isCurrent ? "Connected" : this.busyId === p.device_id ? "Connecting…" : "Connect",
-        disabled: isCurrent || !mayConnect || this.busyId !== null,
-        title: mayConnect ? "" : "Finish the current transfer before switching devices.",
+        disabled: isCurrent || blocked || this.busyId !== null,
+        title: blocked ? `Up to ${MAX_CONNECTED_PEERS} devices can be connected at the same time.` : "",
       });
       btn.addEventListener("click", () => void this.connect(p.device_id));
       list.append(el("li", {},

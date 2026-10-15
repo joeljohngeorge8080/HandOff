@@ -19,7 +19,7 @@ from typing import Any
 from handoff.config import MAX_FILES_PER_TRANSFER
 from handoff.core import Core
 from handoff.db.repositories import FileRepository, TransferRepository
-from handoff.devices.connection import ConnectionManager
+from handoff.devices.connection import ActivePeer, ConnectionManager
 from handoff.errors import HandOffError
 from handoff.transfer.sender import SenderService
 
@@ -37,6 +37,14 @@ _REASONS = {
 }
 
 
+def _skip_reason(exc: HandOffError) -> str:
+    if exc.code == "INVALID_STATE":
+        return "busy"
+    if exc.code in ("DEVICE_OFFLINE", "DEVICE_NOT_FOUND"):
+        return "offline"
+    return "unreachable"
+
+
 def _reason(exc: HandOffError) -> str:
     detail = exc.details.get("reason")
     return detail if isinstance(detail, str) else _REASONS.get(exc.code, "invalid")
@@ -46,7 +54,8 @@ class DropService:
     def __init__(self, core: Core, connections: ConnectionManager, sender: SenderService) -> None:
         self.core, self.connections, self.sender = core, connections, sender
         self._lock = threading.RLock()
-        self._ephemeral: dict[str, list[str]] = {}  # transfer id -> managed file ids
+        # transfer id -> (ids of the transfers sharing these copies, the managed file ids)
+        self._groups: dict[str, tuple[set[str], list[str]]] = {}
         sender.on_finished.append(self._cleanup)
 
     # ----- helpers -----------------------------------------------------------------------
@@ -98,15 +107,36 @@ class DropService:
     # ----- drop.send ---------------------------------------------------------------------
 
     def send(self, raw_paths: object) -> dict[str, Any]:
+        """Send to every connected, online peer (ADR-063). Busy peers are skipped and reported."""
         paths = self._paths(raw_paths)
-        peer = self.connections.active_peer()
-        if peer is None:
+        peers = self.connections.peers()
+        if not peers:
             raise HandOffError("DEVICE_NOT_FOUND", NO_PEER_MESSAGE)
-        if peer.status != "connected":
-            raise HandOffError("DEVICE_OFFLINE", f"{peer.device_name} is offline.")
+        online = [p for p in peers if p.status == "connected"]
+        if not online:
+            raise HandOffError("DEVICE_OFFLINE", f"{peers[0].device_name} is offline.")
+        return self._send(paths, online)
+
+    def send_to(self, raw_paths: object, device_id: str) -> dict[str, Any]:
+        """Send to one connected peer (the COPY gesture's claimant, ADR-058/063)."""
+        paths = self._paths(raw_paths)
+        return self._send(paths, [self.connections.require_connected(device_id)])
+
+    def _busy(self, peer: ActivePeer) -> bool:
         with self.core.db.session() as s:
-            if TransferRepository(s).get_active() is not None:
-                raise HandOffError("INVALID_STATE", "A transfer is already in progress.")
+            return TransferRepository(s).get_active_for_peer(peer.device_id) is not None
+
+    @staticmethod
+    def _skip(peer: ActivePeer, reason: str) -> dict[str, str]:
+        return {"device_id": peer.device_id, "device_name": peer.device_name, "reason": reason}
+
+    def _send(self, paths: list[str], targets: list[ActivePeer]) -> dict[str, Any]:
+        skipped = [self._skip(p, "busy") for p in targets if self._busy(p)]
+        free = [p for p in targets if not any(s["device_id"] == p.device_id for s in skipped)]
+        if not free:
+            raise HandOffError(
+                "INVALID_STATE", "A transfer is already in progress.", {"skipped": skipped}
+            )
 
         items = self._check_items(paths, audit=True)
         bad = next((i for i in items if not i["ok"]), None)
@@ -114,22 +144,42 @@ class DropService:
             raise HandOffError(bad["code"], bad["message"], {"items": items})
 
         imported: list[str] = []
+        created: list[dict[str, Any]] = []
+        first_error: HandOffError | None = None
         try:
             for path in paths:
                 imported.append(self.core.files.import_file(path)["id"])
             with self._lock:  # a fast failure must not clean up before we registered the copies
-                transfer = self.sender.create(imported, peer.device_id)
-                self._ephemeral[transfer["transfer_id"]] = imported
+                for peer in free:
+                    try:
+                        created.append(self.sender.create(imported, peer.device_id))
+                    except HandOffError as exc:
+                        if len(targets) == 1:
+                            raise
+                        first_error = first_error or exc
+                        skipped.append(self._skip(peer, _skip_reason(exc)))
+                if not created:
+                    raise first_error or HandOffError("INTERNAL_ERROR", "Nothing was sent.")
+                group = {t["transfer_id"] for t in created}
+                for tid in group:
+                    self._groups[tid] = (group, imported)
         except BaseException:
             self._delete(imported)
             raise
-        return {"transfer": transfer}
+        return {"transfer": created[0], "transfers": created, "skipped": skipped}
 
     # ----- cleanup -----------------------------------------------------------------------
 
     def _cleanup(self, transfer_id: str) -> None:
+        """The shared managed copies go when the last transfer that uses them has ended."""
         with self._lock:
-            ids = self._ephemeral.pop(transfer_id, [])
+            entry = self._groups.pop(transfer_id, None)
+            if entry is None:
+                return
+            group, ids = entry
+            group.discard(transfer_id)
+            if group:
+                return
         self._delete(ids)
 
     def _delete(self, file_ids: list[str]) -> None:

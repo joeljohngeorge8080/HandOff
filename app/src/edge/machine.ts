@@ -30,7 +30,7 @@ export type View =
   | { kind: "validating"; count: number }
   | { kind: "ready"; count: number; totalSize: number }
   | { kind: "rejected"; reason: RejectReason; message: string; released: boolean; token: number }
-  | { kind: "sending"; transferId: string | null; progress: number; peer: string; count: number }
+  | SendingView
   | { kind: "send_success"; peer: string; count: number; token: number }
   | { kind: "send_failed"; message: string; token: number }
   | { kind: "receiving"; transferId: string; progress: number; peer: string; count: number }
@@ -43,13 +43,40 @@ export type View =
   // The grabbed files, shown until the core says the grab is over (ADR-060). No timer here.
   | { kind: "holding"; names: string[]; count: number };
 
+/** How far one transfer of a drop has got; `status` is its final state once it has one. */
+export interface Part {
+  progress: number;
+  status: string | null;
+}
+
+/**
+ * A drop in flight. A drop goes to every connected device (ADR-063), so it is a *batch* of
+ * transfers: `ids` is null until the core's reply names them, and the drop only counts as done
+ * when every one of them has ended.
+ */
+export interface SendingView {
+  kind: "sending";
+  transferId: string | null; // the first transfer, for single-device callers
+  progress: number;
+  peer: string;
+  count: number;
+  ids: string[] | null;
+  parts: Record<string, Part>;
+  /** Devices left out of this drop (busy with another transfer). */
+  skipped: string[];
+}
+
 export type ViewKind = View["kind"];
 
 export interface Model {
   view: View;
-  /** Name of the connected, online peer; null when there is none. */
+  /** What the strip calls the destination: one device's name, "3 devices", or null for none. */
   peer: string | null;
-  /** The core has a transfer in flight (either direction). */
+  /** How many devices are connected and online. */
+  peerCount: number;
+  /** Ids of the transfers in flight, either direction (at most one per device). */
+  active: string[];
+  /** Every connected device already has a transfer, so a new drop would have nowhere to go. */
   busy: boolean;
   /** Counter that gives every terminal view its own timer token. */
   seq: number;
@@ -62,11 +89,11 @@ export type Input =
   | { type: "proximity"; phase: Proximity }
   | { type: "inspected"; result: DropInspection }
   | { type: "inspect_failed"; message: string }
-  | { type: "sent"; transferId: string }
+  | { type: "sent"; transferId: string; transferIds?: string[]; skipped?: string[] }
   | { type: "send_failed"; code: string; message: string; items?: DropItem[] }
   | { type: "transfer"; transfer: Transfer }
-  | { type: "connection"; peer: string | null }
-  | { type: "snapshot"; peer: string | null; active: Transfer | null }
+  | { type: "connection"; peer: string | null; count?: number }
+  | { type: "snapshot"; peer: string | null; count?: number; active: Transfer | null; actives?: Transfer[] }
   | { type: "held"; names: string[]; count: number }
   | { type: "open_panel" }
   | { type: "close_panel" }
@@ -86,7 +113,18 @@ export interface Step {
 
 export const HOLD_MS = { rejected: 2200, success: 2600, failed: 3600, hand: 900 } as const;
 
-export const initialModel = (): Model => ({ view: { kind: "idle" }, peer: null, busy: false, seq: 0, held: null });
+export const initialModel = (): Model => ({
+  view: { kind: "idle" }, peer: null, peerCount: 0, active: [], busy: false, seq: 0, held: null,
+});
+
+/** With N devices connected, a drop is blocked only once all N already have a transfer. */
+const busyFor = (peerCount: number, active: readonly string[]): boolean => active.length >= Math.max(1, peerCount);
+
+function trackTransfer(m: Model, t: Transfer): Model {
+  const rest = m.active.filter((id) => id !== t.transfer_id);
+  const active = isFinished(t.status) ? rest : [...rest, t.transfer_id];
+  return { ...m, active, busy: busyFor(m.peerCount, active) };
+}
 
 /** Short hand-feedback views: a transfer, a drag or a new gesture may take over at any time. */
 const HAND_VIEWS: ReadonlySet<ViewKind> = new Set(["hand_grab", "hand_release", "holding"]);
@@ -163,17 +201,15 @@ export function reduce(m: Model, input: Input): Step {
     case "inspect_failed":
       return m.view.kind === "validating" ? reject(m, "invalid", input.message, false) : stay(m);
     case "sent":
-      return m.view.kind === "sending" && m.view.transferId === null
-        ? withView(m, { ...m.view, transferId: input.transferId })
-        : stay(m);
+      return onSent(m, input);
     case "send_failed":
       return onSendFailed(m, input);
     case "transfer":
       return onTransfer(m, input.transfer);
     case "connection":
-      return onConnection(m, input.peer);
+      return onConnection(m, input.peer, input.count);
     case "snapshot":
-      return onSnapshot(m, input.peer, input.active);
+      return onSnapshot(m, input);
     case "open_panel":
       return openPanel(m);
     case "close_panel":
@@ -274,9 +310,65 @@ function onRelease(m: Model, paths: string[]): Step {
   if (paths.length === 0) return reject(m, "invalid", MESSAGES.invalid, true);
   return withView(
     m,
-    { kind: "sending", transferId: null, progress: 0, peer: m.peer, count: paths.length },
+    { kind: "sending", transferId: null, progress: 0, peer: m.peer, count: paths.length, ids: null, parts: {}, skipped: [] },
     [stage, { type: "send", paths }],
   );
+}
+
+/** The core named the transfers of this drop. Results that arrived earlier now count. */
+function onSent(m: Model, input: { transferId: string; transferIds?: string[]; skipped?: string[] }): Step {
+  const v = m.view;
+  if (v.kind !== "sending" || v.ids !== null) return stay(m);
+  const ids = input.transferIds && input.transferIds.length > 0 ? input.transferIds : [input.transferId];
+  const parts: Record<string, Part> = {};
+  for (const id of ids) {
+    const seen = v.parts[id];
+    if (seen) parts[id] = seen;
+  }
+  return settle(m, { ...v, transferId: input.transferId, ids, parts, skipped: input.skipped ?? [] });
+}
+
+function averageProgress(v: SendingView): number {
+  const ids = v.ids ?? Object.keys(v.parts);
+  if (ids.length === 0) return 0;
+  const sum = ids.reduce((acc, id) => acc + (v.parts[id]?.progress ?? 0), 0);
+  return Math.min(0.99, sum / ids.length);
+}
+
+/**
+ * Honesty rule for a batch: success only when EVERY transfer the core created is completed.
+ * Until the reply names the batch (`ids` is null) nothing can end the drop.
+ */
+function settle(m: Model, v: SendingView): Step {
+  const shown: SendingView = { ...v, progress: averageProgress(v) };
+  if (v.ids === null) return withView(m, shown);
+  const results = v.ids.map((id) => v.parts[id]?.status ?? null);
+  if (results.some((r) => r === null)) return withView(m, shown);
+
+  const total = results.length;
+  const ok = results.filter((r) => r === "completed").length;
+  const effects: Effect[] =
+    v.skipped.length > 0 ? [{ type: "notify", title: "HandOff", body: MESSAGES.skippedBusy(v.skipped) }] : [];
+  if (ok === total) {
+    return hold(m, (token) => ({ kind: "send_success", peer: v.peer, count: v.count, token }), HOLD_MS.success, effects);
+  }
+  const message =
+    total === 1
+      ? results[0] === "partially_completed" ? MESSAGES.partial : MESSAGES.failed
+      : ok === 0 ? MESSAGES.failed : MESSAGES.partialSend(ok, total);
+  return hold(m, (token) => ({ kind: "send_failed", message, token }), HOLD_MS.failed, effects);
+}
+
+function onSentUpdate(m: Model, t: Transfer): Step {
+  const v = m.view as SendingView;
+  if (v.ids !== null && !v.ids.includes(t.transfer_id)) return stay(m); // another drop's transfer
+  const done = isFinished(t.status);
+  const part: Part = { progress: done ? 1 : progressOf(t), status: done ? t.status : null };
+  return settle(m, {
+    ...v,
+    transferId: v.transferId ?? t.transfer_id,
+    parts: { ...v.parts, [t.transfer_id]: part },
+  });
 }
 
 function onSendFailed(m: Model, input: { code: string; message: string; items?: DropItem[] }): Step {
@@ -288,33 +380,22 @@ function onSendFailed(m: Model, input: { code: string; message: string; items?: 
 
 function onTransfer(m: Model, t: Transfer): Step {
   const done = isFinished(t.status);
-  const next: Model = { ...m, busy: !done };
+  const next = trackTransfer(m, t);
   const k = next.view.kind;
   const peer = t.peer_device_name ?? "device";
   const count = t.file_count;
 
   if (t.direction === "sent") {
-    if (k === "sending") {
-      const v = next.view as Extract<View, { kind: "sending" }>;
-      if (v.transferId !== null && v.transferId !== t.transfer_id) return stay(next);
-      if (!done) return withView(next, { ...v, transferId: t.transfer_id, progress: progressOf(t) });
-      return t.status === "completed"
-        ? hold(next, (token) => ({ kind: "send_success", peer, count, token }), HOLD_MS.success)
-        : hold(
-            next,
-            (token) => ({
-              kind: "send_failed",
-              message: t.status === "partially_completed" ? MESSAGES.partial : MESSAGES.failed,
-              token,
-            }),
-            HOLD_MS.failed,
-          );
-    }
+    if (k === "sending") return onSentUpdate(next, t);
     // A send we did not start from the edge (e.g. started elsewhere): show it if we are free.
     if (PRE_DRAG.has(k) && !done) {
+      const progress = progressOf(t);
       return withView(
         next,
-        { kind: "sending", transferId: t.transfer_id, progress: progressOf(t), peer, count },
+        {
+          kind: "sending", transferId: t.transfer_id, progress, peer, count, ids: [t.transfer_id],
+          parts: { [t.transfer_id]: { progress, status: null } }, skipped: [],
+        },
         [stage],
       );
     }
@@ -350,8 +431,11 @@ function finishReceive(m: Model, t: Transfer, peer: string, count: number, needS
   return hold(m, (token) => ({ kind: "receive_failed", message, token }), HOLD_MS.failed, effects);
 }
 
-function onConnection(m: Model, peer: string | null): Step {
-  const next = { ...m, peer };
+function onConnection(m: Model, peer: string | null, count?: number): Step {
+  const peerCount = count ?? (peer === null ? 0 : 1);
+  const next = {
+    ...m, peer, peerCount, busy: m.active.length > 0 ? busyFor(peerCount, m.active) : m.busy,
+  };
   if (peer === null && DRAGGING.has(m.view.kind)) return reject(next, "no_peer", MESSAGES.noPeer, false);
   if (peer !== null && m.view.kind === "rejected" && !m.view.released && m.view.reason === "no_peer") {
     return withView(next, { kind: "armed" });
@@ -359,10 +443,21 @@ function onConnection(m: Model, peer: string | null): Step {
   return stay(next);
 }
 
-function onSnapshot(m: Model, peer: string | null, active: Transfer | null): Step {
-  const base: Model = { ...m, peer, busy: active !== null && !isFinished(active.status) };
-  if (active && !isFinished(active.status)) return onTransfer(base, active);
-  return stay(base);
+function onSnapshot(
+  m: Model,
+  input: { peer: string | null; count?: number; active: Transfer | null; actives?: Transfer[] },
+): Step {
+  const running = (input.actives ?? (input.active ? [input.active] : [])).filter((t) => !isFinished(t.status));
+  const peerCount = input.count ?? (input.peer === null ? 0 : 1);
+  const active = running.map((t) => t.transfer_id);
+  let model: Model = { ...m, peer: input.peer, peerCount, active, busy: busyFor(peerCount, active) && active.length > 0 };
+  const effects: Effect[] = [];
+  for (const t of running) {
+    const s = onTransfer(model, t);
+    model = s.model;
+    effects.push(...s.effects);
+  }
+  return step(model, effects);
 }
 
 function onTimer(m: Model, token: number): Step {

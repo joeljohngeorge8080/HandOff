@@ -4,7 +4,7 @@
 // next snapshot corrects the picture; while a transfer is running it is polled a little faster.
 import type { Input } from "./edge/machine";
 import { TransferWatcher, type Notice } from "./notifications";
-import { connectedPeerName } from "./rules";
+import { connectedPeerCount, connectedPeerName } from "./rules";
 import type { Connection, Snapshot, Transfer } from "./types";
 
 export const POLL_IDLE_MS = 15_000;
@@ -58,10 +58,18 @@ export class Sync {
   }
 
   private apply(snap: Snapshot): void {
-    const all = snap.active_transfer ? [snap.active_transfer, ...snap.recent_history] : snap.recent_history;
+    const running = snap.active_transfers ?? (snap.active_transfer ? [snap.active_transfer] : []);
+    const all = [...running, ...snap.recent_history];
     for (const n of this.watcher.update(all)) this.deps.notify(n);
-    this.deps.dispatch({ type: "snapshot", peer: connectedPeerName(snap.connection), active: snap.active_transfer });
-    if (snap.active_transfer) this.names(snap.active_transfer);
+    const actives = snap.active_transfers ?? (snap.active_transfer ? [snap.active_transfer] : []);
+    this.deps.dispatch({
+      type: "snapshot",
+      peer: connectedPeerName(snap.connection),
+      count: connectedPeerCount(snap.connection),
+      active: snap.active_transfer,
+      actives,
+    });
+    for (const t of actives) this.names(t);
   }
 
   private names(t: Transfer): void {
@@ -75,7 +83,8 @@ export class Sync {
       this.deps.dispatch({ type: "transfer", transfer: t });
       for (const n of this.watcher.update([t])) this.deps.notify(n);
     } else if (e?.event === "connection.changed" && e.data) {
-      this.deps.dispatch({ type: "connection", peer: connectedPeerName(e.data as Connection) });
+      const conn = e.data as Connection;
+      this.deps.dispatch({ type: "connection", peer: connectedPeerName(conn), count: connectedPeerCount(conn) });
     }
   }
 

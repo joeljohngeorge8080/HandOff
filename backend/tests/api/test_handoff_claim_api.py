@@ -70,7 +70,7 @@ def test_a_trusted_peer_can_claim_after_this_device_restarted(h):
     seen = []
     h.ctx.claims = lambda who: seen.append(who) or {"transfer_id": "t1"}
     trust_alice(h)
-    h.ctx.connections._active = None  # what a restart leaves behind; trust stays in the database
+    h.ctx.connections._peers.clear()  # what a restart leaves behind; trust stays in the database
     r = h.call("POST", "/api/v1/handoff/claim", json={})
     assert r.status_code == 202 and seen == [h.alice.device_id]
-    assert h.ctx.connections.active_peer().device_id == h.alice.device_id
+    assert h.ctx.connections.is_connected(h.alice.device_id)

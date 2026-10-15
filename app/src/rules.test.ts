@@ -1,13 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { canSwitchPeer, connectedPeerName, formatBytes, isFinished, shortenPath } from "./rules";
-import type { Transfer } from "./types";
-
-describe("canSwitchPeer (ADR-047)", () => {
-  it("is blocked during an active transfer and allowed otherwise", () => {
-    expect(canSwitchPeer(null)).toBe(true);
-    expect(canSwitchPeer({ status: "transferring" } as Transfer)).toBe(false);
-  });
-});
+import { MAX_CONNECTED_PEERS, connectedPeerCount, connectedPeerName, formatBytes, isFinished, peerLimitReached, shortenPath } from "./rules";
+import type { Peer } from "./types";
 
 describe("isFinished", () => {
   it("recognises the three terminal states only", () => {
@@ -46,5 +39,31 @@ describe("connectedPeerName", () => {
     expect(connectedPeerName({ connected: false, device: { device_name: "A" } })).toBeNull(); // offline
     expect(connectedPeerName({ connected: true, device: { device_name: "A" } })).toBe("A");
     expect(connectedPeerName({ connected: true, device: null })).toBeNull();
+  });
+});
+
+const dev = (name: string, status = "connected"): Peer => ({ device_id: name, device_name: name, address: null, port: null, status });
+
+describe("several connected devices (ADR-063)", () => {
+  it("names one device and counts several", () => {
+    const c = (devices: Peer[]) => ({ connected: devices.length > 0, device: devices[0] ?? null, devices });
+    expect(connectedPeerName(c([dev("A")]))).toBe("A");
+    expect(connectedPeerName(c([dev("A"), dev("B")]))).toBe("2 devices");
+    expect(connectedPeerName(c([dev("A"), dev("B"), dev("C")]))).toBe("3 devices");
+    expect(connectedPeerCount(c([dev("A"), dev("B")]))).toBe(2);
+  });
+  it("offline devices are not connected", () => {
+    const devices = [dev("A"), dev("B", "offline")];
+    expect(connectedPeerName({ connected: true, device: devices[0] ?? null, devices })).toBe("A");
+    expect(connectedPeerCount({ connected: true, device: devices[0] ?? null, devices })).toBe(1);
+    expect(connectedPeerName({ connected: false, device: devices[1] ?? null, devices: [dev("B", "offline")] })).toBeNull();
+  });
+  it("the limit is four online devices; offline ones do not count against a new connection", () => {
+    expect(MAX_CONNECTED_PEERS).toBe(4);
+    const four = ["A", "B", "C", "D"].map((n) => dev(n));
+    expect(peerLimitReached({ connected: true, device: four[0] ?? null, devices: four })).toBe(true);
+    const three = [...four.slice(0, 3), dev("D", "offline")];
+    expect(peerLimitReached({ connected: true, device: three[0] ?? null, devices: three })).toBe(false);
+    expect(peerLimitReached({ connected: false, device: null })).toBe(false);
   });
 });

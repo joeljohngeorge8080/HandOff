@@ -571,9 +571,9 @@ must not be allowed.
 
 ---
 
-# 24. One Active Transfer Test
+# 24. One Active Transfer per Peer Test
 
-Phase 1 permits one active transfer.
+At most one transfer per peer is active; different peers run in parallel (ADR-063). Also test: 4 peers connect and a 5th gets `DEVICE_LIMIT_REACHED`, an offline slot is reclaimed, a drop reaches every online peer, a busy peer is skipped, one peer going offline aborts only its own transfer, parallel receives never overwrite, disk reservation across in-flight jobs, and the v1→v2 index migration.
 
 Test:
 

@@ -13,6 +13,7 @@ import time
 import uuid
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ from handoff.audit import AuditEvent, record_event
 from handoff.config import (
     CONNECT_TIMEOUT_SECONDS,
     IO_CHUNK_SIZE,
+    MAX_CONNECTED_PEERS,
     MAX_FILES_PER_TRANSFER,
     REQUEST_TIMEOUT_SECONDS,
     UPLOAD_RESPONSE_TIMEOUT_SECONDS,
@@ -41,23 +43,38 @@ log = logging.getLogger(__name__)
 _PROGRESS_INTERVAL = 0.25
 
 
+@dataclass
+class _Abort:
+    """One running transfer's stop switch: aborting a peer must not touch the other peers."""
+
+    device_id: str
+    event: threading.Event = field(default_factory=threading.Event)
+    reason: HandOffError | None = None
+
+
 class SenderService:
     def __init__(self, core: Core, connections: ConnectionManager, client: PeerClient) -> None:
         self.core, self.connections, self.client = core, connections, client
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="transfer")
-        self._abort = threading.Event()
-        self._abort_reason: HandOffError | None = None
+        # One worker per possible peer: transfers with different peers run in parallel (ADR-063).
+        self._executor = ThreadPoolExecutor(
+            max_workers=MAX_CONNECTED_PEERS, thread_name_prefix="transfer"
+        )
+        self._aborts: dict[str, _Abort] = {}
+        self._aborts_lock = threading.Lock()
         # Called with the transfer id once a job is terminal (e.g. to delete dropped copies).
         self.on_finished: list[Callable[[str], None]] = []
 
     def stop(self) -> None:
-        self.abort_active("DEVICE_OFFLINE", "HandOff is shutting down.")
+        self.abort_peer(None, "DEVICE_OFFLINE", "HandOff is shutting down.")
         self._executor.shutdown(wait=True, cancel_futures=True)
 
-    def abort_active(self, code: str, message: str) -> None:
-        """Called when the peer goes offline: stop the running upload promptly."""
-        self._abort_reason = HandOffError(code, message)
-        self._abort.set()
+    def abort_peer(self, device_id: str | None, code: str, message: str) -> None:
+        """Stop the running uploads to one peer (all of them when `device_id` is None)."""
+        with self._aborts_lock:
+            for ab in self._aborts.values():
+                if device_id is None or ab.device_id == device_id:
+                    ab.reason = HandOffError(code, message)
+                    ab.event.set()
 
     # ----- transfer.create ---------------------------------------------------------------
 
@@ -67,14 +84,16 @@ class SenderService:
             raise HandOffError("INVALID_REQUEST", "'destination_device_id' must be a string.")
         peer = self.connections.require_connected(destination_device_id)
         with self.core.db.session() as s:
-            if TransferRepository(s).get_active() is not None:
-                raise HandOffError("INVALID_STATE", "Another transfer is already active.")
+            if TransferRepository(s).get_active_for_peer(peer.device_id) is not None:
+                raise HandOffError(
+                    "INVALID_STATE", f"A transfer with {peer.device_name} is already in progress."
+                )
         self._require_reachable(peer)
 
         tid = f"tr_{uuid.uuid4().hex}"
         entries, manifest = self._prepare(tid, ids)
         now = utcnow()
-        with self.core.db.session() as s:
+        with self.core.db.write_session() as s:
             repo = TransferRepository(s)
             t = Transfer(
                 id=tid, direction="sent", source_device_id=None,
@@ -96,6 +115,8 @@ class SenderService:
                 metadata={"file_count": len(rows), "total_size": manifest.total_size},
             )  # fmt: skip
         self.core.events.transfer_changed(tid)
+        with self._aborts_lock:
+            self._aborts[tid] = _Abort(peer.device_id)
         self._executor.submit(self._run, tid, manifest, entries, peer)
         return must(self.core.history.get(tid), "transfer")
 
@@ -145,8 +166,6 @@ class SenderService:
     def _run(
         self, tid: str, manifest: Manifest, entries: list[tuple[Path, str]], peer: ActivePeer
     ) -> None:
-        self._abort.clear()
-        self._abort_reason = None
         archive = self.core.paths.temp_dir / f"{tid}.zip"
         try:
             address, port = peer.endpoint()
@@ -176,6 +195,8 @@ class SenderService:
             self._fail(tid, HandOffError("INTERNAL_ERROR", "The transfer could not be completed."))
         finally:
             archive.unlink(missing_ok=True)
+            with self._aborts_lock:
+                self._aborts.pop(tid, None)
             self._ensure_terminal(tid)
             self.core.events.transfer_changed(tid)
             for callback in list(self.on_finished):
@@ -188,10 +209,8 @@ class SenderService:
         sent, last = 0, 0.0
         with path.open("rb") as f:
             while chunk := f.read(IO_CHUNK_SIZE):
-                if self._abort.is_set():
-                    raise self._abort_reason or HandOffError(
-                        "DEVICE_OFFLINE", "The device went offline."
-                    )
+                if (ab := self._aborts.get(tid)) is not None and ab.event.is_set():
+                    raise ab.reason or HandOffError("DEVICE_OFFLINE", "The device went offline.")
                 yield chunk
                 sent += len(chunk)
                 now = time.monotonic()
@@ -212,8 +231,9 @@ class SenderService:
                 ),
             )  # fmt: skip
         except HandOffError as exc:
-            if self._abort.is_set() and self._abort_reason is not None:
-                raise self._abort_reason from exc
+            ab = self._aborts.get(tid)
+            if ab is not None and ab.event.is_set() and ab.reason is not None:
+                raise ab.reason from exc
             raise
 
     # ----- state updates -----------------------------------------------------------------
@@ -221,7 +241,7 @@ class SenderService:
     def _set_status(
         self, tid: str, status: TransferStatus, *, archive_size: int | None = None
     ) -> None:
-        with self.core.db.session() as s:
+        with self.core.db.write_session() as s:
             repo = TransferRepository(s)
             t = must(repo.get(tid), "transfer")
             repo.set_status(t, status)
@@ -237,7 +257,7 @@ class SenderService:
         self.core.events.transfer_changed(tid)
 
     def _progress(self, tid: str, sent: int) -> None:
-        with self.core.db.session() as s:
+        with self.core.db.write_session() as s:
             t = TransferRepository(s).get(tid)
             if t is not None and t.status == TransferStatus.TRANSFERRING.value:
                 t.bytes_transferred = sent
@@ -254,7 +274,7 @@ class SenderService:
             }
         except (ValueError, KeyError, TypeError) as exc:
             raise HandOffError("NETWORK_ERROR", "Unexpected response from the device.") from exc
-        with self.core.db.session() as s:
+        with self.core.db.write_session() as s:
             repo = TransferRepository(s)
             t = must(repo.get(tid), "transfer")
             if {tf.original_name for tf in t.files} != set(reported):
@@ -288,7 +308,7 @@ class SenderService:
             )  # fmt: skip
 
     def _fail(self, tid: str, exc: HandOffError) -> None:
-        with self.core.db.session() as s:
+        with self.core.db.write_session() as s:
             repo = TransferRepository(s)
             t = repo.get(tid)
             if t is None or TransferStatus(t.status) in TERMINAL_STATUSES:

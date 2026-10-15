@@ -11,7 +11,10 @@ export interface Peer {
 
 export interface Connection {
   connected: boolean;
+  /** The first connected device (kept for older callers); `devices` is the full list. */
   device: Peer | null;
+  /** Every device holding a connection slot, online or offline (ADR-063). */
+  devices?: Peer[];
 }
 
 export interface TransferFile {
@@ -50,6 +53,8 @@ export interface Snapshot {
   connection: Connection;
   hand_control?: HandControl;
   active_transfer: Transfer | null;
+  /** Every transfer in progress; one per connected device at most (ADR-063). */
+  active_transfers?: Transfer[];
   recent_history: Transfer[];
 }
 
@@ -67,6 +72,20 @@ export interface DropItem {
   code?: string;
   reason?: string;
   message?: string;
+}
+
+/** A device a drop was not sent to, and why (e.g. it is busy with another transfer). */
+export interface SkippedPeer {
+  device_id: string;
+  device_name: string;
+  reason: string;
+}
+
+/** The reply to `drop.send`: one transfer per device that took it. */
+export interface DropResult {
+  transfer: Transfer;
+  transfers?: Transfer[];
+  skipped?: SkippedPeer[];
 }
 
 export interface DropInspection {

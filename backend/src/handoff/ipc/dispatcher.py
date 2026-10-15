@@ -129,6 +129,7 @@ class Dispatcher:
         return {"items": self.core.history.list(limit, offset)}
 
     def _status_snapshot(self, _p: dict[str, Any]) -> dict[str, Any]:
+        active = list(self.core.history.active_list())
         return {
             "device": {
                 "device_id": self.core.identity.device_id,
@@ -138,10 +139,11 @@ class Dispatcher:
             "connection": (
                 self.network.connections.snapshot()
                 if self.network
-                else {"connected": False, "device": None}
+                else {"connected": False, "devices": [], "device": None}
             ),
             "hand_control": self.core.hand_control.status(),
-            "active_transfer": self.core.history.active(),
+            "active_transfer": active[0] if active else None,
+            "active_transfers": active,
             "recent_history": self.core.history.list(10, 0),
         }
 

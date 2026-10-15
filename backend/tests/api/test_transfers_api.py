@@ -516,18 +516,22 @@ def test_an_unrelated_constraint_failure_is_not_reported_as_a_replay(ready, monk
     assert r.status_code == 500 and err(r) == "INTERNAL_ERROR"
 
 
-def test_a_trusted_device_that_is_not_the_connected_peer_cannot_send(ready):
+def test_a_second_trusted_device_may_send_while_the_first_is_connected(ready):
+    """ADR-063: Bob does not have to be 'the' connected peer; there are slots for several."""
     with ready.core.db.session() as s:
         repo = DeviceRepository(s)
         repo.upsert(ready.bob.device_id, "Bob", "linux", public_key=ready.bob.public_key_b64)
         repo.set_trusted(ready.bob.device_id, True)
-    r = ready.start_transfer("tr_b", FILES, who=ready.bob)  # alice is the connected peer
-    assert r.status_code == 409 and err(r) == "DEVICE_ALREADY_CONNECTED"
-    assert ready.transfer_rows() == []
-    assert ready.start_transfer("tr_a", FILES).status_code == 201  # the connected peer still can
+    assert ready.start_transfer("tr_b", FILES, who=ready.bob).status_code == 201
+    assert ready.start_transfer("tr_a", FILES).status_code == 201  # and Alice in parallel
+    assert {t.id for t in ready.transfer_rows()} == {"tr_a", "tr_b"}
+    assert {d["device_id"] for d in ready.connections.snapshot()["devices"]} == {
+        ready.alice.device_id,
+        ready.bob.device_id,
+    }
 
 
 def test_a_trusted_device_may_send_after_a_restart_when_nobody_is_connected(ready):
-    ready.connections._active = None  # as after a restart: trust persisted, connection did not
+    ready.connections._peers.clear()  # as after a restart: trust persisted, connection did not
     assert ready.start_transfer("tr_1", FILES).status_code == 201
     assert ready.connections.snapshot()["device"]["device_id"] == ready.alice.device_id

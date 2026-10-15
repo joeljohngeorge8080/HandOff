@@ -188,3 +188,59 @@ def test_something_that_is_not_a_png_on_the_clipboard_is_never_held(pair, pictur
     assert a_seen == ["copy_empty"]
     held_dir = a.paths.temp_dir / "held"
     assert not held_dir.exists() or not list(held_dir.iterdir())
+
+
+# ------------------------------------------------------------------ several laptops (ADR-063)
+
+
+@pytest.fixture
+def trio(node_factory):
+    return node_factory("Alice"), node_factory("Bob"), node_factory("Carol")
+
+
+def test_a_release_claims_from_every_connected_laptop_and_only_the_holder_sends(
+    trio, tmp_path, on_clipboard
+):
+    a, b, c = trio
+    connect_pair(a, b)
+    a.see(b, c)
+    c.see(a)
+    a.ok("devices.connect", {"device_id": c.device_id})  # Alice is now connected to both
+    data = os.urandom(20_000)
+    on_clipboard([str(make(tmp_path, "photo.png", data))])
+    a_seen, b_seen = gestures(a), gestures(b)
+
+    b.core.hand_control.on_grab()  # only Bob grabs
+    a.core.hand_control.on_release()  # the hand opens in front of Alice
+
+    wait_for(lambda: a.received_files() == {"photo.png": data}, what="the file to reach Alice")
+    assert a_seen == ["claimed"] and b_seen == ["copied", "sent"]
+    assert c.received_files() == {}  # Carol held nothing and received nothing
+
+
+def test_a_laptop_that_is_not_connected_to_the_holder_cannot_claim_its_file(
+    trio, tmp_path, on_clipboard
+):
+    a, b, c = trio
+    connect_pair(a, b)
+    a.see(b, c)
+    c.see(a)
+    a.ok("devices.connect", {"device_id": c.device_id})
+    on_clipboard([str(make(tmp_path, "secret.txt"))])
+    b.core.hand_control.on_grab()  # Bob holds a file; Carol is not connected to Bob
+
+    c_seen = gestures(c)
+    c.core.hand_control.on_release()  # Carol only asks Alice, who holds nothing
+    assert c_seen == ["claim_failed"]
+    assert b.ok("history.list")["items"] == [] and c.received_files() == {}
+
+
+def test_a_release_with_no_one_holding_anything_is_refused(trio):
+    a, b, c = trio
+    connect_pair(a, b)
+    a.see(b, c)
+    c.see(a)
+    a.ok("devices.connect", {"device_id": c.device_id})
+    a_seen = gestures(a)
+    a.core.hand_control.on_release()
+    assert a_seen == ["claim_failed"]

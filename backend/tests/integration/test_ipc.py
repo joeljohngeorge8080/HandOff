@@ -254,7 +254,7 @@ def test_status_snapshot_shape(d, core):
     snap = call(d, "status.snapshot")["result"]
     assert snap["device"] == {"device_id": core.identity.device_id, "device_name": "Test-Laptop"}
     assert "receive_mode" not in snap and snap["receive_directory"]
-    assert snap["connection"] == {"connected": False, "device": None}
+    assert snap["connection"] == {"connected": False, "devices": [], "device": None}
     assert snap["active_transfer"] is None and snap["recent_history"] == []
 
 

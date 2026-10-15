@@ -73,7 +73,9 @@ describe("Sync", () => {
     const s = setup(snap());
     await s.sync.start();
     s.push({ event: "connection.changed", data: { connected: false, device: null } });
-    expect(s.inputs.at(-1)).toEqual({ type: "connection", peer: null });
+    expect(s.inputs.at(-1)).toEqual({ type: "connection", peer: null, count: 0 });
+    s.push({ event: "connection.changed", data: { connected: true, device: { device_name: "A", status: "connected" }, devices: [{ device_name: "A", status: "connected" }, { device_name: "B", status: "connected" }] } });
+    expect(s.inputs.at(-1)).toEqual({ type: "connection", peer: "2 devices", count: 2 });
   });
   it("ignores unknown or malformed events", async () => {
     const s = setup(snap());

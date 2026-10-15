@@ -4,8 +4,9 @@ The laptop that grabs reads what Ctrl+C just copied and *holds* it: the files on
 or, when the clipboard holds a picture instead (a browser's "Copy image"), a temporary PNG written
 from it. It never sends on its own release: an open palm there cancels the grab. The files move
 when the closed hand is carried to the other laptop and opens in front of its camera: that
-laptop's `release` finds nothing held, so it sends a signed *claim* to its connected peer
-(`POST /api/v1/handoff/claim`). The holder answers a claim only from its trusted connected peer,
+laptop's `release` finds nothing held, so it sends a signed *claim* to its connected peers
+(`POST /api/v1/handoff/claim`). The holder answers a claim only from a trusted connected peer,
+and sends only to that claimant (ADR-063);
 only while the grab is still fresh, and then sends through the same `drop.send` pipeline as a
 dragged drop (every type, size, symlink and executable check, all-or-nothing). The worker never
 names a file; the clipboard is read only after a grab. The open palm that cancels takes effect
@@ -59,9 +60,9 @@ class CopyBridge:
     def __init__(
         self,
         events: EventBus,
-        send: Callable[[list[str]], Any],
+        send: Callable[[list[str], str], Any],
         claim: Callable[[], None],
-        active_peer: Callable[[], str | None],
+        is_peer: Callable[[str], bool],
         read: Callable[[], list[str]] = read_clipboard_files,
         clock: Callable[[], float] = time.monotonic,
         *,
@@ -73,7 +74,7 @@ class CopyBridge:
         self._events = events
         self._send = send
         self._claim = claim
-        self._active_peer = active_peer
+        self._is_peer = is_peer
         self._read = read
         self._clock = clock
         self._read_image = read_image
@@ -213,7 +214,7 @@ class CopyBridge:
 
     def serve_claim(self, requester_device_id: str) -> dict[str, str]:
         with self._lock:
-            if self._active_peer() != requester_device_id:
+            if not self._is_peer(requester_device_id):
                 raise HandOffError("DEVICE_NOT_FOUND", "No HandOff device connected")
             paths = self._live()
             if paths is None:
@@ -224,7 +225,7 @@ class CopyBridge:
             self._stop_timers()
             self._publish_held(None)
             try:
-                result = self._send(paths)  # imports its own copies before it returns
+                result = self._send(paths, requester_device_id)  # imports its own copies
             except HandOffError as exc:
                 log.info("Copy gesture send refused: %s (%s)", exc.message, exc.code)
                 self._say("send_failed")

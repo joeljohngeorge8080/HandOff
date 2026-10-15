@@ -978,7 +978,7 @@ status
 
 ### One active transfer
 
-A partial unique index (`uq_transfers_one_active`) allows at most one transfer whose status is not `completed`, `failed` or `partially_completed`. The database itself therefore enforces the Phase-1 one-active-transfer rule (ADR-015).
+A partial unique index (`uq_transfers_one_active_per_peer`, schema version 2) allows at most one transfer per peer (`COALESCE(source_device_id, destination_device_id)`) whose status is not `completed`, `failed` or `partially_completed`. The database itself therefore enforces one active transfer per peer, in either direction, while different peers run in parallel (ADR-015 as amended by ADR-063). The version-1 index `uq_transfers_one_active` is dropped by the upgrade routine; no data is changed.
 
 ### Audit Logs
 
@@ -1329,7 +1329,7 @@ Claude Code must follow these rules:
 9. Maintain audit logs.
 10. Enforce SQLite foreign keys.
 11. Use transactions for logical state changes.
-12. Allow only one active transfer in Phase 1.
+12. Allow only one active transfer per peer (ADR-063).
 13. Do not introduce Alembic.
 14. Do not silently destroy existing data during schema changes.
 15. Update this document when the schema intentionally changes.

@@ -373,9 +373,9 @@ Example:
 
 ---
 
-## FR-013 — One Peer Only
+## FR-013 — Several Connected Peers
 
-Phase 1 shall support exactly one connected peer at a time.
+HandOff shall support up to 4 connected trusted peers at the same time (`MAX_CONNECTED_PEERS`, ADR-063; supersedes ADR-046). Each can send and receive. At most one transfer is active per peer; different peers transfer in parallel.
 
 Example:
 
@@ -397,7 +397,7 @@ Laptop A
 
 during Phase 1.
 
-The user may switch to another discovered device. Switching releases the current connection internally and is blocked while a transfer is active (ADR-046, ADR-047).
+The user may connect further discovered devices. Connecting adds a peer; it never disconnects another and is not blocked by a running transfer. When all slots hold online peers, Connect is refused with `DEVICE_LIMIT_REACHED`; an offline peer's slot is reclaimed (ADR-063; supersedes ADR-047).
 
 ---
 
@@ -1044,7 +1044,7 @@ Phase 1 is considered successful when all of the following are true.
 - [ ] Devices have persistent identities.
 - [ ] User can connect to a device.
 - [ ] Successful connection is shown in the UI.
-- [ ] Only one peer can be connected at a time.
+- [ ] Up to 4 peers can be connected at once; a 5th is refused while all 4 are online.
 - [ ] Connection is bidirectional.
 - [ ] Offline peers are detected.
 

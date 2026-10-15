@@ -3,7 +3,7 @@
 // This is the only edge module with side effects. It talks to the core only through the IPC
 // bridge, never to peers or the filesystem (CLAUDE.md non-negotiable #9).
 import type { InteractionBus } from "../interaction/bus";
-import type { DropInspection, DropItem, Transfer } from "../types";
+import type { DropInspection, DropItem, DropResult } from "../types";
 import {
   type Effect,
   type Input,
@@ -105,9 +105,16 @@ export class EdgeController {
 
   private async send(paths: string[]): Promise<void> {
     try {
-      const res = await this.deps.core<{ transfer: Transfer }>("drop.send", { paths });
-      this.dispatch({ type: "sent", transferId: res.transfer.transfer_id });
-      this.dispatch({ type: "transfer", transfer: res.transfer });
+      const res = await this.deps.core<DropResult>("drop.send", { paths });
+      // One transfer per device that took the drop (ADR-063); older replies carry just `transfer`.
+      const transfers = res.transfers && res.transfers.length > 0 ? res.transfers : [res.transfer];
+      this.dispatch({
+        type: "sent",
+        transferId: res.transfer.transfer_id,
+        transferIds: transfers.map((t) => t.transfer_id),
+        skipped: (res.skipped ?? []).map((s) => s.device_name),
+      });
+      for (const transfer of transfers) this.dispatch({ type: "transfer", transfer });
     } catch (e) {
       const err = e as ErrorLike;
       this.dispatch({

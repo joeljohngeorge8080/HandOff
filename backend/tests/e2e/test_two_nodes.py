@@ -92,7 +92,11 @@ def test_identity_mismatch_on_connect_is_refused_and_nothing_is_trusted(trio):
     a.discovery.set_peers([replace(spoof, fingerprint=c.core.identity.public_key_b64)])
     out = a.rpc("devices.connect", {"device_id": b.device_id})
     assert out["error"]["code"] == "PEER_CONNECTION_FAILED"
-    assert a.ok("devices.status")["connection"] == {"connected": False, "device": None}
+    assert a.ok("devices.status")["connection"] == {
+        "connected": False,
+        "devices": [],
+        "device": None,
+    }
     assert "TLS_FAILURE" in audit_set(a)
     assert b.ok("devices.list")["devices"] == []  # Bob never learned about, or trusted, Alice
     assert a.ok("devices.list")["devices"] == []
@@ -326,10 +330,10 @@ def test_a_file_that_changed_size_on_disk_is_not_sent(pair, tmp_path):
     assert out["error"]["code"] == "FILE_STORAGE_ERROR"
 
 
-# ------------------------------------------------------------------ switching peers
+# ------------------------------------------------------------------ several peers (ADR-063)
 
 
-def test_switching_peers_is_blocked_during_a_transfer_then_allowed(
+def test_connecting_another_peer_during_a_transfer_keeps_both_and_the_transfer(
     trio, tmp_path, monkeypatch, gate
 ):
     a, b, c = trio
@@ -341,32 +345,30 @@ def test_switching_peers_is_blocked_during_a_transfer_then_allowed(
     tid = send(a, b, [fid])
     assert gate.started.wait(10)
 
-    out = a.rpc("devices.connect", {"device_id": c.device_id})
-    assert out["error"]["code"] == "INVALID_STATE"
-    assert a.ok("devices.status")["connection"]["device"]["device_id"] == b.device_id  # unchanged
+    now = a.ok("devices.connect", {"device_id": c.device_id})["connection"]  # was INVALID_STATE
+    assert {d["device_id"] for d in now["devices"]} == {b.device_id, c.device_id}
+    assert a.transfer(tid)["status"] == "transferring"  # the running transfer is untouched
 
     gate.release.set()
     assert a.wait_terminal(tid)["status"] == "completed"
-
-    now = a.ok("devices.connect", {"device_id": c.device_id})["connection"]
-    assert now["device"]["device_id"] == c.device_id and now["connected"] is True
-    # Bob was told (graceful internal disconnect) but still trusts Alice
-    assert b.ok("devices.status")["connection"]["connected"] is False
-    assert any(d["is_trusted"] for d in b.ok("devices.list")["devices"])
+    # Both peers are still connected and trust Alice; each is a valid destination
+    assert b.ok("devices.status")["connection"]["connected"] is True
     assert c.ok("devices.status")["connection"]["device"]["device_id"] == a.device_id
-    # and the old peer is no longer a valid destination
-    out = a.rpc("transfer.create", {"file_ids": [fid], "destination_device_id": b.device_id})
-    assert out["error"]["code"] == "DEVICE_NOT_FOUND"
+    fid2 = a.import_bytes("two.png", os.urandom(1000), tmp_path)
+    assert a.wait_terminal(send(a, c, [fid2]))["status"] == "completed"
+    assert a.wait_terminal(send(a, b, [fid2]))["status"] == "completed"
 
 
-def test_a_receiver_connected_to_someone_else_turns_away_a_second_device(trio):
+def test_a_receiver_that_is_already_connected_to_someone_else_accepts_a_second_device(trio):
     a, b, c = trio
     connect_pair(a, b)
     c.see(b)
-    out = c.rpc("devices.connect", {"device_id": b.device_id})
-    assert out["error"]["code"] == "DEVICE_ALREADY_CONNECTED"
-    assert c.ok("devices.status")["connection"]["connected"] is False
-    assert b.ok("devices.status")["connection"]["device"]["device_id"] == a.device_id
+    conn = c.ok("devices.connect", {"device_id": b.device_id})["connection"]
+    assert conn["connected"] is True
+    assert {d["device_id"] for d in b.ok("devices.status")["connection"]["devices"]} == {
+        a.device_id,
+        c.device_id,
+    }
 
 
 # ------------------------------------------------------------------ offline detection and recovery

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -61,13 +61,16 @@ class HistoryService:
             devices = {d.device_id: d.device_name for d in DeviceRepository(s).list_all()}
             return serialize_transfer(t, devices)
 
-    def active(self) -> dict[str, Any] | None:
+    def active_list(self) -> Sequence[dict[str, Any]]:
+        """Every transfer in progress, oldest first (one per peer at most, ADR-063)."""
         with self.db.session() as s:
-            t = TransferRepository(s).get_active()
-            if t is None:
-                return None
             devices = {d.device_id: d.device_name for d in DeviceRepository(s).list_all()}
-            return serialize_transfer(t, devices)
+            return [serialize_transfer(t, devices) for t in TransferRepository(s).list_active()]
+
+    def active(self) -> dict[str, Any] | None:
+        """The oldest transfer in progress, if any (kept for single-transfer callers)."""
+        active = self.active_list()
+        return active[0] if active else None
 
     def cleanup(self, now: datetime | None = None) -> int:
         """Delete finished transfers older than the retention setting. 0 days = keep forever.

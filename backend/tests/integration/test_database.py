@@ -101,12 +101,42 @@ def test_datetimes_round_trip_as_utc(core):
         assert row.updated_at.utcoffset() == timedelta(0)
 
 
-def test_only_one_transfer_can_be_active(core):
+def test_only_one_transfer_per_peer_can_be_active(core):
     add_peer(core)
     add_transfer(core, "tr_a", status="transferring")
     with pytest.raises(HandOffError) as e:
         add_transfer(core, "tr_b", status="created")
     assert e.value.code == "INVALID_STATE"
+
+
+@pytest.mark.parametrize("first,second", [("sent", "received"), ("received", "sent")])
+def test_one_active_transfer_per_peer_holds_across_directions(core, first, second):
+    add_peer(core)
+    add_transfer(core, "tr_a", status="transferring", direction=first)
+    with pytest.raises(HandOffError) as e:
+        add_transfer(core, "tr_b", status="created", direction=second)
+    assert e.value.code == "INVALID_STATE"
+
+
+def test_different_peers_can_have_active_transfers_at_the_same_time(core):
+    add_peer(core, "peer-1", "A")
+    add_peer(core, "peer-2", "B")
+    add_peer(core, "peer-3", "C")
+    add_transfer(core, "tr_a", status="transferring", peer="peer-1")
+    add_transfer(core, "tr_b", status="created", peer="peer-2", direction="received")
+    add_transfer(core, "tr_c", status="accepted", peer="peer-3")
+    with core.db.session() as s:
+        assert len(TransferRepository(s).list_active()) == 3
+
+
+def test_active_transfer_lookup_is_per_peer(core):
+    add_peer(core, "peer-1", "A")
+    add_peer(core, "peer-2", "B")
+    add_transfer(core, "tr_a", status="transferring", peer="peer-1")
+    with core.db.session() as s:
+        repo = TransferRepository(s)
+        assert repo.get_active_for_peer("peer-1").id == "tr_a"
+        assert repo.get_active_for_peer("peer-2") is None
 
 
 def test_a_new_transfer_is_allowed_once_the_previous_one_finished(core):
@@ -179,15 +209,65 @@ def test_older_database_is_upgraded_in_place_and_keeps_its_data(core):
         calls.append(1)
         conn.execute(text("CREATE TABLE upgrade_marker (x INTEGER)"))
 
-    assert init_schema(core.db, target=2, migrations={1: v1_to_v2}) == 2
+    nxt = SCHEMA_VERSION + 1
+    assert init_schema(core.db, target=nxt, migrations={SCHEMA_VERSION: v1_to_v2}) == nxt
     assert calls == [1]
     with core.db.session() as s:
-        assert SettingsRepository(s).get("schema_version") == 2
+        assert SettingsRepository(s).get("schema_version") == nxt
         assert SettingsRepository(s).get("keepme") == "yes"
     assert "upgrade_marker" in inspect(core.db.engine).get_table_names()
     # idempotent: running again does nothing
-    assert init_schema(core.db, target=2, migrations={1: v1_to_v2}) == 2
+    assert init_schema(core.db, target=nxt, migrations={SCHEMA_VERSION: v1_to_v2}) == nxt
     assert calls == [1]
+
+
+def _make_v1_database(core, *, active_peer="peer-1"):
+    """Turn a fresh database into one shaped like schema version 1, with an active transfer."""
+    add_peer(core, active_peer, "Old-Laptop")
+    with core.db.engine.begin() as conn:
+        conn.execute(text("DROP INDEX uq_transfers_one_active_per_peer"))
+        conn.execute(
+            text(
+                "CREATE UNIQUE INDEX uq_transfers_one_active ON transfers (1) "
+                "WHERE status NOT IN ('completed','failed','partially_completed')"
+            )
+        )
+    add_transfer(core, "tr_old", status="transferring", peer=active_peer)
+    with core.db.session() as s:
+        SettingsRepository(s).set("schema_version", 1)
+
+
+def _index_names(core):
+    with core.db.engine.connect() as conn:  # reflection skips expression indexes
+        rows = conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'transfers'")
+        )
+        return {r[0] for r in rows}
+
+
+def test_version_1_database_is_upgraded_to_per_peer_transfers_without_losing_data(core):
+    _make_v1_database(core)
+    assert "uq_transfers_one_active" in _index_names(core)
+
+    assert init_schema(core.db) == SCHEMA_VERSION
+
+    names = _index_names(core)
+    assert "uq_transfers_one_active" not in names
+    assert "uq_transfers_one_active_per_peer" in names
+    with core.db.session() as s:
+        assert TransferRepository(s).get("tr_old").status == "transferring"
+    # the old global limit is gone: another peer may now transfer, the same peer may not
+    add_peer(core, "peer-2", "B")
+    add_transfer(core, "tr_new", status="created", peer="peer-2")
+    with pytest.raises(HandOffError):
+        add_transfer(core, "tr_dup", status="created", peer="peer-1")
+
+
+def test_upgrading_twice_is_harmless(core):
+    _make_v1_database(core)
+    init_schema(core.db)
+    init_schema(core.db)
+    assert "uq_transfers_one_active_per_peer" in _index_names(core)
 
 
 def test_failed_upgrade_rolls_back_completely(core):
@@ -196,19 +276,19 @@ def test_failed_upgrade_rolls_back_completely(core):
         raise RuntimeError("migration bug")
 
     with pytest.raises(RuntimeError):
-        init_schema(core.db, target=2, migrations={1: broken})
+        init_schema(core.db, target=SCHEMA_VERSION + 1, migrations={SCHEMA_VERSION: broken})
     names = inspect(core.db.engine).get_table_names()
     assert "half_done" not in names
     with core.db.session() as s:
-        assert SettingsRepository(s).get("schema_version") == 1
+        assert SettingsRepository(s).get("schema_version") == SCHEMA_VERSION
     assert set(names) >= REQUIRED_TABLES
 
 
 def test_missing_upgrade_path_is_an_error_not_a_reset(core):
     with pytest.raises(DatabaseInitError):
-        init_schema(core.db, target=3, migrations={})
+        init_schema(core.db, target=SCHEMA_VERSION + 2, migrations={})
     with core.db.session() as s:
-        assert SettingsRepository(s).get("schema_version") == 1
+        assert SettingsRepository(s).get("schema_version") == SCHEMA_VERSION
 
 
 def test_database_from_a_newer_version_is_refused(core):
@@ -229,7 +309,7 @@ def test_unversioned_existing_database_is_stamped_not_wiped(paths):
     c.start()
     with c.db.session() as s:
         assert SettingsRepository(s).get("keepme") == "yes"
-        assert SettingsRepository(s).get("schema_version") == 1
+        assert SettingsRepository(s).get("schema_version") == SCHEMA_VERSION
     c.close()
 
 
@@ -398,3 +478,33 @@ def test_a_failed_start_closes_the_database_and_reports_the_error(paths, monkeyp
     with pytest.raises(IdentityError):
         c.start()
     assert disposed == [1] and real is Core.start
+
+
+def test_parallel_read_then_write_sessions_never_fail_with_database_is_locked(core):
+    """Regression (ADR-063): several transfers update their rows at once. A deferred transaction
+    that reads and then writes fails at once with 'database is locked' when another writer
+    committed in between, whatever the busy timeout (a plain `session()` does); a
+    `write_session()` takes the write lock up front and just waits its turn."""
+    import threading
+
+    peers = [add_peer(core, f"peer-{i}", f"P{i}") for i in range(4)]
+    for i, peer in enumerate(peers):
+        add_transfer(core, f"tr_{i}", status="transferring", peer=peer)
+    errors: list[BaseException] = []
+
+    def hammer(tid: str) -> None:
+        try:
+            for n in range(150):
+                with core.db.write_session() as s:
+                    repo = TransferRepository(s)
+                    t = repo.get(tid)
+                    t.bytes_transferred = n
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=hammer, args=(f"tr_{i}",)) for i in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(60)
+    assert errors == []
